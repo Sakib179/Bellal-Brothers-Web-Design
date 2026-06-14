@@ -1,0 +1,31 @@
+{
+  "name": "bellal-brothers",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Frontend-only project calculation demo for Bellal Brothers",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint ."
+  },
+  "keywords": [
+    "nextjs",
+    "tailwind",
+    "frontend-demo"
+  ],
+  "license": "UNLICENSED",
+  "dependencies": {
+    "lucide-react": "^1.18.0",
+    "next": "^16.2.9",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@tailwindcss/postcss": "^4.3.1",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^16.2.9",
+    "tailwindcss": "^4.3.1"
+  }
+}

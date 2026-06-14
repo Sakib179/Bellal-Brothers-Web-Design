@@ -1,0 +1,134 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f6f8fb;
+  --foreground: #14212a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.grid > * {
+  min-width: 0;
+}
+
+html {
+  min-height: 100%;
+  background: var(--background);
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(circle at 12% 8%, rgba(13, 148, 136, 0.12), transparent 28rem),
+    radial-gradient(circle at 92% 18%, rgba(245, 158, 11, 0.12), transparent 26rem),
+    var(--background);
+  color: var(--foreground);
+  font-family:
+    "Nirmala UI",
+    "Hind Siliguri",
+    "Segoe UI",
+    Arial,
+    sans-serif;
+  letter-spacing: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+::selection {
+  background: rgba(13, 148, 136, 0.2);
+}
+
+.bb-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #a9b6bf transparent;
+}
+
+.bb-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.bb-scrollbar::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: #a9b6bf;
+  background-clip: padding-box;
+}
+
+.bb-ledger-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.bb-ledger-table th,
+.bb-ledger-table td {
+  border-right: 1px solid #dbe3ea;
+  border-bottom: 1px solid #dbe3ea;
+}
+
+.bb-ledger-table th:first-child,
+.bb-ledger-table td:first-child {
+  border-left: 1px solid #dbe3ea;
+}
+
+.bb-ledger-table thead th {
+  border-top: 1px solid #dbe3ea;
+}
+
+.bb-ledger-table thead th:first-child {
+  border-top-left-radius: 8px;
+}
+
+.bb-ledger-table thead th:last-child {
+  border-top-right-radius: 8px;
+}
+
+@layer components {
+  .bb-input {
+    @apply h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-bold text-slate-800 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10;
+  }
+
+  .bb-btn-primary {
+    @apply inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-teal-700 bg-teal-700 px-4 text-sm font-black text-white shadow-sm transition hover:border-teal-800 hover:bg-teal-800 focus:outline-none focus:ring-4 focus:ring-teal-500/20;
+  }
+
+  .bb-btn-secondary {
+    @apply inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 text-sm font-black text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-slate-50 hover:text-slate-950 focus:outline-none focus:ring-4 focus:ring-slate-400/20;
+  }
+
+  .bb-icon-btn {
+    @apply grid h-9 w-9 place-items-center rounded-lg border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700 focus:outline-none focus:ring-4 focus:ring-teal-500/10;
+  }
+}
+
+@media print {
+  body {
+    background: #ffffff;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-surface {
+    box-shadow: none !important;
+    border: 0 !important;
+  }
+}
