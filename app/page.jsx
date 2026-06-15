@@ -2123,11 +2123,10 @@ export default function Home() {
     const groups = groupByDate(records);
     return (
       <div className="bb-scrollbar hidden overflow-x-auto p-4 pt-0 xl:block">
-        <table className="bb-ledger-table min-w-[1080px] w-full text-left text-sm">
+        <table className="bb-ledger-table min-w-[1040px] w-full text-left text-sm">
           <thead className="bg-slate-50 text-xs font-black uppercase text-slate-500">
             <tr>
               <th className="px-3 py-3">Date</th>
-              <th className="px-3 py-3 text-center">#</th>
               <th className="px-3 py-3">Type</th>
               <th className="px-3 py-3">Location</th>
               <th className="px-3 py-3">Category</th>
@@ -2137,16 +2136,104 @@ export default function Home() {
               <th className="px-3 py-3">Quantity</th>
               <th className="px-3 py-3 text-right">Price</th>
               <th className="px-3 py-3 text-center">File</th>
-              <th className="px-3 py-3 text-center">Delete</th>
             </tr>
           </thead>
           <tbody>
             {Object.entries(groups).map(([date, dateRecords]) => (
-              <LedgerDateRows key={date} date={date} records={dateRecords} />
+              <ProjectLedgerDateRows key={date} date={date} records={dateRecords} />
             ))}
           </tbody>
         </table>
       </div>
+    );
+  }
+
+  function ProjectLedgerDateRows({ date, records }) {
+    const totals = totalsFor(records);
+    const orderedRecords = [...records].sort((a, b) => a.time.localeCompare(b.time));
+    const orderMap = new Map(orderedRecords.map((record, index) => [record.id, index + 1]));
+    const typeOrder = ["জমা", "খরচ"];
+    const locationOrder = ["Side", "Office"];
+    const typeGroups = [
+      ...typeOrder
+        .map((type) => ({ type, records: orderedRecords.filter((record) => record.type === type) }))
+        .filter((group) => group.records.length),
+      ...[...new Set(orderedRecords.map((record) => record.type))]
+        .filter((type) => !typeOrder.includes(type))
+        .map((type) => ({ type, records: orderedRecords.filter((record) => record.type === type) })),
+    ];
+    let rowIndex = 0;
+
+    return (
+      <>
+        {typeGroups.flatMap((typeGroup) => {
+          const locationGroups = [
+            ...locationOrder
+              .map((location) => ({ location, records: typeGroup.records.filter((record) => record.location === location) }))
+              .filter((group) => group.records.length),
+            ...[...new Set(typeGroup.records.map((record) => record.location))]
+              .filter((location) => !locationOrder.includes(location))
+              .map((location) => ({ location, records: typeGroup.records.filter((record) => record.location === location) })),
+          ];
+
+          return locationGroups.flatMap((locationGroup, locationIndex) =>
+            locationGroup.records.map((record, recordIndex) => {
+              const showDate = rowIndex === 0;
+              const showType = locationIndex === 0 && recordIndex === 0;
+              const showLocation = recordIndex === 0;
+              rowIndex += 1;
+
+              return (
+                <tr key={record.id} className="align-top">
+                  {showDate && (
+                    <td rowSpan={records.length + 1} className="w-32 bg-slate-50 px-3 py-3 text-center font-black text-slate-800">
+                      {formatDate(date)}
+                      <span className="mt-1 block text-xs font-semibold text-slate-500">{weekday(date)}</span>
+                    </td>
+                  )}
+                  {showType && (
+                    <td rowSpan={typeGroup.records.length} className="w-24 bg-white px-3 py-3 text-center align-middle">
+                      <TypeBadge type={typeGroup.type} />
+                    </td>
+                  )}
+                  {showLocation && (
+                    <td rowSpan={locationGroup.records.length} className="w-24 bg-white px-3 py-3 text-center align-middle">
+                      <Badge tone={locationGroup.location === "Office" ? "green" : "blue"}>{locationGroup.location}</Badge>
+                    </td>
+                  )}
+                  <td className="px-3 py-3">
+                    <p className="font-semibold text-slate-700">{record.category}</p>
+                    {relatedRecordName(record) && <p className="mt-1 text-xs font-semibold text-slate-500">{relatedRecordName(record)}</p>}
+                  </td>
+                  <td className="px-3 py-3 text-slate-600">{record.addedBy}</td>
+                  <td className="px-3 py-3 text-slate-600">{formatTime(record.time)}</td>
+                  <td className="min-w-64 px-3 py-3 text-slate-700">
+                    <span className="mr-1 font-black text-slate-400">{orderMap.get(record.id)}.</span>
+                    {record.narration}
+                  </td>
+                  <td className="px-3 py-3 text-slate-600">{record.quantity || "-"}</td>
+                  <td className={classNames("px-3 py-3 text-right font-black", record.type === "জমা" ? "text-emerald-700" : "text-rose-700")}>{money(record.price)}</td>
+                  <td className="px-3 py-3 text-center">
+                    <button type="button" className="bb-icon-btn mx-auto" onClick={() => setModal({ type: "evidence", recordId: record.id })} aria-label="View evidence">
+                      <FileText size={17} />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })
+          );
+        })}
+        <tr className="bg-slate-50 font-black">
+          <td colSpan={9} className="px-3 py-3 text-slate-700">
+            Daily total
+            <div className="mt-2 flex flex-wrap justify-end gap-4">
+              <span className="text-emerald-700">জমা {money(totals.income)}</span>
+              <span className="text-rose-700">খরচ {money(totals.expense)}</span>
+              <span className={totals.balance >= 0 ? "text-emerald-700" : "text-rose-700"}>Balance {money(totals.balance)}</span>
+            </div>
+          </td>
+        </tr>
+      </>
     );
   }
 
@@ -2226,7 +2313,7 @@ export default function Home() {
                 <p className={classNames("font-black", totals.balance >= 0 ? "text-emerald-700" : "text-rose-700")}>{money(totals.balance)}</p>
               </div>
               {dateRecords.map((record, index) => (
-                <RecordCard key={record.id} record={record} index={index + 1} />
+                <RecordCard key={record.id} record={record} index={index + 1} allowDelete={false} />
               ))}
             </section>
           );
@@ -2415,14 +2502,14 @@ export default function Home() {
     );
   }
 
-  function RecordCard({ record, index, showProject = false }) {
+  function RecordCard({ record, index, showProject = false, allowDelete = true }) {
     const project = getProject(record.projectId);
     return (
       <article className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="font-black text-slate-950">
-              {index ? `${index}. ` : ""}
+              {index && allowDelete ? `${index}. ` : ""}
               {showProject ? project?.title || "Unknown" : record.category}
             </p>
             <p className="mt-1 text-sm font-semibold text-slate-500">
@@ -2437,14 +2524,14 @@ export default function Home() {
           <InfoRow label="Category" value={record.category} />
           {relatedRecordName(record) && <InfoRow label="Name" value={relatedRecordName(record)} />}
           <InfoRow label="Quantity" value={record.quantity || "-"} />
-          <InfoRow label="Narration" value={record.narration} />
+          <InfoRow label="Narration" value={!allowDelete && index ? `${index}. ${record.narration}` : record.narration} />
           <InfoRow label="Price" value={money(record.price)} valueClass={record.type === "জমা" ? "text-emerald-700" : "text-rose-700"} />
         </div>
         <div className="mt-4 flex gap-2">
           <button type="button" className="bb-icon-btn" onClick={() => setModal({ type: "evidence", recordId: record.id })} aria-label="View evidence">
             <FileText size={17} />
           </button>
-          {canDeleteRecord(record) && (
+          {allowDelete && canDeleteRecord(record) && (
             <button type="button" className="bb-icon-btn hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700" onClick={() => deleteRecord(record.id)} aria-label="Delete record">
               <Trash2 size={17} />
             </button>
