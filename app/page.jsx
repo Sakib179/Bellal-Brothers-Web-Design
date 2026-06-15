@@ -131,6 +131,63 @@ const personalPartySuggestions = {
   Others: ["Admin Office", "Miscellaneous"],
 };
 
+const recordItemSuggestions = [
+  "Cement",
+  "Sand",
+  "Soil",
+  "Brick chips",
+  "Steel rod",
+  "Binding wire",
+  "Brick",
+  "PVC pipe",
+  "Tiles",
+  "Grout",
+  "Paint",
+  "Wall putty",
+  "Glass",
+  "Aluminium section",
+  "Fuel",
+  "Labour",
+];
+
+function cleanRecordItems(items) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => ({
+      name: String(item?.name || item?.item || "").trim(),
+      quantity: String(item?.quantity || "").trim(),
+    }))
+    .filter((item) => item.name);
+}
+
+function recordItems(record) {
+  const items = cleanRecordItems(record?.items);
+  if (items.length) return items;
+  return [
+    {
+      name: record?.narration || "Entry",
+      quantity: record?.quantity || "",
+    },
+  ];
+}
+
+function itemNamesSummary(record) {
+  return recordItems(record)
+    .map((item) => item.name)
+    .filter(Boolean)
+    .join(", ");
+}
+
+function quantitySummary(record) {
+  return recordItems(record)
+    .map((item) => item.quantity)
+    .filter(Boolean)
+    .join(", ");
+}
+
+function rowSpanForRecords(records) {
+  return records.reduce((sum, record) => sum + recordItems(record).length, 0);
+}
+
 function normalizeStore(rawStore) {
   const nextStore = { ...rawStore };
   nextStore.personalTransactions = nextStore.personalTransactions || [];
@@ -144,6 +201,7 @@ function normalizeStore(rawStore) {
       relatedType: record.relatedType || (partner ? "partner" : ""),
       relatedId: record.relatedId || partner?.id || null,
       relatedName: record.relatedName || partner?.name || "",
+      items: record.items ? cleanRecordItems(record.items) : [],
     };
   });
   return nextStore;
@@ -172,13 +230,14 @@ export default function Home() {
   const [subcontractorFilters, setSubcontractorFilters] = useState({ search: "", specialty: "সব", project: "সব", active: "সব" });
   const [accessFilters, setAccessFilters] = useState({ user: "সব", role: "সব", project: "সব", level: "সব" });
   const [reportFilters, setReportFilters] = useState(null);
+  const [printStatement, setPrintStatement] = useState(null);
 
   useEffect(() => {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
     try {
       const parsed = JSON.parse(raw);
-      if ([2, 3].includes(parsed?.version)) {
+      if ([2, 3, 4].includes(parsed?.version)) {
         window.queueMicrotask(() => setStore(normalizeStore(parsed)));
       }
     } catch {
@@ -445,8 +504,17 @@ export default function Home() {
     const date = String(data.get("date") || DEMO_TODAY);
     const time = String(data.get("time") || "10:00");
     const price = Number(data.get("price") || 0);
-    const narration = String(data.get("narration") || "").trim();
-    if (!narration || price <= 0) return setToast("Narration and a valid price are required.");
+    const itemNames = data.getAll("itemName");
+    const itemQuantities = data.getAll("itemQuantity");
+    const items = cleanRecordItems(
+      itemNames.map((name, index) => ({
+        name,
+        quantity: itemQuantities[index] || "",
+      }))
+    );
+    const narration = items.map((item) => item.name).join(", ");
+    const quantityValue = items.map((item) => item.quantity).filter(Boolean).join(", ");
+    if (!items.length || price <= 0) return setToast("At least one item name and a valid price are required.");
 
     const file = form.elements.evidence?.files?.[0];
     const nextStore = structuredClone(store);
@@ -461,14 +529,15 @@ export default function Home() {
         String(data.get("category") || "Others"),
         currentUser.name,
         narration,
-        String(data.get("quantity") || "").trim(),
+        quantityValue,
         price,
         depositSource,
         partnerId,
         file?.name || "",
         relatedType,
         relatedId,
-        relatedName
+        relatedName,
+        items
       )
     );
     const nextProject = nextStore.projects.find((item) => item.id === project.id);
@@ -602,6 +671,174 @@ export default function Home() {
     };
   }
 
+  function isAllFilter(value) {
+    return !value || value === "সব" || value === "all" || value === "no";
+  }
+
+  function recordMatchesProjectPrintFilters(record, filters, includeDate = true) {
+    const query = String(filters.search || "").trim().toLowerCase();
+    const text = [record.category, relatedRecordName(record), record.addedBy, itemNamesSummary(record), quantitySummary(record), record.price].join(" ").toLowerCase();
+    return (
+      (isAllFilter(filters.type) || record.type === filters.type) &&
+      (isAllFilter(filters.location) || record.location === filters.location) &&
+      (isAllFilter(filters.category) || record.category === filters.category) &&
+      (isAllFilter(filters.addedBy) || record.addedBy === filters.addedBy) &&
+      (!includeDate || dateInRange(record.date, filters.from, filters.to)) &&
+      (!query || text.includes(query))
+    );
+  }
+
+  function recordMatchesReportPrintFilters(record, filters, includeDate = true) {
+    return (
+      (filters.projectId === "all" || record.projectId === filters.projectId) &&
+      (!includeDate || !filters.from || record.date >= filters.from) &&
+      (!includeDate || !filters.to || record.date <= filters.to) &&
+      (isAllFilter(filters.type) || record.type === filters.type) &&
+      (isAllFilter(filters.category) || record.category === filters.category) &&
+      (isAllFilter(filters.location) || record.location === filters.location) &&
+      (filters.partnerOnly !== "yes" || (record.type === "জমা" && record.depositSource === "Partner"))
+    );
+  }
+
+  function visibleFilterItems(filters, names = {}) {
+    return Object.entries(filters || {})
+      .filter(([, value]) => !isAllFilter(value))
+      .map(([key, value]) => ({ label: names[key] || key, value }));
+  }
+
+  function buildPrintableStatement({ title, scopeLabel, project = null, records, openingRecords, filters, filterNames, includeProjectColumn = true }) {
+    const ordered = [...records].sort((a, b) => `${a.date}T${a.time}`.localeCompare(`${b.date}T${b.time}`));
+    const openingBalance = totalsFor(openingRecords || []).balance;
+    let runningBalance = openingBalance;
+    const rows = ordered.map((record, index) => {
+      const debit = record.type === "খরচ" ? Number(record.price || 0) : 0;
+      const credit = record.type === "জমা" ? Number(record.price || 0) : 0;
+      runningBalance += credit - debit;
+      const rowProject = getProject(record.projectId);
+      return {
+        id: record.id,
+        serial: index + 1,
+        date: record.date,
+        time: record.time,
+        project: rowProject?.title || project?.title || "N/A",
+        location: record.location,
+        category: record.category,
+        relatedName: relatedRecordName(record),
+        addedBy: record.addedBy,
+        narration: itemNamesSummary(record),
+        quantity: quantitySummary(record) || record.quantity || "-",
+        debit,
+        credit,
+        balance: runningBalance,
+        evidence: record.evidence || "No file",
+      };
+    });
+    const periodFrom = filters.from || ordered[0]?.date || "";
+    const periodTo = filters.to || ordered.at(-1)?.date || "";
+    const totals = rows.reduce(
+      (sum, row) => ({
+        debit: sum.debit + row.debit,
+        credit: sum.credit + row.credit,
+      }),
+      { debit: 0, credit: 0 }
+    );
+    const generatedAt = new Date();
+    return {
+      title,
+      scopeLabel,
+      project,
+      includeProjectColumn,
+      rows,
+      openingBalance,
+      closingBalance: runningBalance,
+      totalDebit: totals.debit,
+      totalCredit: totals.credit,
+      recordCount: rows.length,
+      filters: visibleFilterItems(filters, filterNames),
+      period: periodFrom || periodTo ? `${periodFrom ? formatDate(periodFrom) : "Start"} to ${periodTo ? formatDate(periodTo) : "End"}` : "All dates",
+      statementNo: `BB-${generatedAt.getFullYear()}${String(generatedAt.getMonth() + 1).padStart(2, "0")}${String(generatedAt.getDate()).padStart(2, "0")}-${String(generatedAt.getHours()).padStart(2, "0")}${String(generatedAt.getMinutes()).padStart(2, "0")}`,
+      generatedAt: generatedAt.toLocaleString("en-GB", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      }),
+      generatedBy: currentUser?.name || "Demo User",
+    };
+  }
+
+  function printStatementData(statement) {
+    setPrintStatement(statement);
+    window.setTimeout(() => window.print(), 120);
+  }
+
+  function printProjectStatement(project, visibleRecords) {
+    const allProjectRecords = projectRecords(project.id);
+    const openingRecords = projectFilters.from
+      ? allProjectRecords
+          .filter((record) => record.date < projectFilters.from)
+          .filter((record) => recordMatchesProjectPrintFilters(record, projectFilters, false))
+      : [];
+    printStatementData(
+      buildPrintableStatement({
+        title: "Project Account Statement",
+        scopeLabel: project.title,
+        project,
+        records: visibleRecords,
+        openingRecords,
+        filters: projectFilters,
+        filterNames: {
+          type: "Type",
+          location: "Location",
+          category: "Category",
+          addedBy: "Added by",
+          from: "From",
+          to: "To",
+          search: "Search",
+        },
+        includeProjectColumn: false,
+      })
+    );
+  }
+
+  function printReportStatement(report, filters) {
+    if (!report) return;
+    const idSet = new Set(visibleIds);
+    const openingRecords = filters.from
+      ? store.records
+          .filter((record) => idSet.has(record.projectId))
+          .filter((record) => record.date < filters.from)
+          .filter((record) => recordMatchesReportPrintFilters(record, filters, false))
+      : [];
+    const selectedProject = filters.projectId === "all" ? null : getProject(filters.projectId);
+    printStatementData(
+      buildPrintableStatement({
+        title: "Project Cost Statement",
+        scopeLabel: selectedProject?.title || "All visible projects",
+        project: selectedProject,
+        records: report.records,
+        openingRecords,
+        filters: {
+          ...filters,
+          projectId: selectedProject?.title || "all",
+          partnerOnly: filters.partnerOnly === "yes" ? "Only partner জমা" : "no",
+        },
+        filterNames: {
+          projectId: "Project",
+          type: "Type",
+          location: "Location",
+          category: "Category",
+          partnerOnly: "Partner report",
+          from: "From",
+          to: "To",
+        },
+        includeProjectColumn: filters.projectId === "all",
+      })
+    );
+  }
+
   function generateReport(event) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -620,7 +857,7 @@ export default function Home() {
   function downloadReport() {
     const report = buildReport();
     if (!report) return;
-    const headers = ["Date", "Time", "Project", "Type", "Location", "Category", "Related Name", "Added By", "Narration", "Quantity", "Price", "Deposit Source", "Partner"];
+    const headers = ["Date", "Time", "Project", "Type", "Location", "Category", "Related Name", "Added By", "Narration", "Items / Quantity", "Price", "Deposit Source", "Partner"];
     const rows = report.records.map((record) => {
       const project = getProject(record.projectId);
       return [
@@ -632,8 +869,8 @@ export default function Home() {
         record.category,
         relatedRecordName(record),
         record.addedBy,
-        record.narration,
-        record.quantity,
+        itemNamesSummary(record),
+        quantitySummary(record) || record.quantity,
         record.price,
         record.depositSource,
         record.partnerId ? partnerName(record.partnerId) : "",
@@ -741,23 +978,24 @@ export default function Home() {
           {toast}
         </div>
       )}
+      <StatementPrintView statement={printStatement} />
     </div>
   );
 
   function renderPage() {
-    if (page === "dashboard") return <DashboardPage />;
-    if (page === "projects") return <ProjectsPage />;
-    if (page === "project-detail") return <ProjectDetailPage />;
-    if (page === "income") return <LedgerPage type="জমা" />;
-    if (page === "expenses") return <LedgerPage type="খরচ" />;
-    if (page === "personal-transactions") return <PersonalTransactionsPage />;
-    if (page === "reports") return <ReportsPage />;
-    if (page === "staff") return <StaffPage />;
-    if (page === "partners") return <PartnersPage />;
-    if (page === "subcontractors") return <SubcontractorsPage />;
-    if (page === "profile") return <ProfilePage />;
-    if (page === "access") return <AccessPage />;
-    return <DashboardPage />;
+    if (page === "dashboard") return DashboardPage();
+    if (page === "projects") return ProjectsPage();
+    if (page === "project-detail") return ProjectDetailPage();
+    if (page === "income") return LedgerPage({ type: "জমা" });
+    if (page === "expenses") return LedgerPage({ type: "খরচ" });
+    if (page === "personal-transactions") return PersonalTransactionsPage();
+    if (page === "reports") return ReportsPage();
+    if (page === "staff") return StaffPage();
+    if (page === "partners") return PartnersPage();
+    if (page === "subcontractors") return SubcontractorsPage();
+    if (page === "profile") return ProfilePage();
+    if (page === "access") return AccessPage();
+    return DashboardPage();
   }
 
   function DashboardPage() {
@@ -926,7 +1164,7 @@ export default function Home() {
     const projectAddedByOptions = uniqueOptions(projectAllRecords.map((record) => record.addedBy));
     const records = sortedRecords(projectRecords(project.id)).filter((record) => {
       const query = projectFilters.search.trim().toLowerCase();
-      const text = [record.category, relatedRecordName(record), record.addedBy, record.narration, record.quantity, record.price].join(" ").toLowerCase();
+      const text = [record.category, relatedRecordName(record), record.addedBy, itemNamesSummary(record), quantitySummary(record), record.price].join(" ").toLowerCase();
       return (
         (projectFilters.type === "সব" || record.type === projectFilters.type) &&
         (projectFilters.location === "সব" || record.location === projectFilters.location) &&
@@ -1000,7 +1238,7 @@ export default function Home() {
                 <SearchBox
                   value={projectFilters.search}
                   onChange={(value) => setProjectFilters((prev) => ({ ...prev, search: value }))}
-                  placeholder="Search narration, category"
+                  placeholder="Search item, category"
                 />
               </div>
             }
@@ -1010,6 +1248,12 @@ export default function Home() {
             <FilterSelect label="Added by" value={projectFilters.addedBy || "সব"} options={["সব", ...projectAddedByOptions]} onChange={(value) => setProjectFilters((prev) => ({ ...prev, addedBy: value }))} />
             <FilterDate label="From" value={projectFilters.from || ""} onChange={(value) => setProjectFilters((prev) => ({ ...prev, from: value }))} />
             <FilterDate label="To" value={projectFilters.to || ""} onChange={(value) => setProjectFilters((prev) => ({ ...prev, to: value }))} />
+            <div className="flex min-w-0 justify-end lg:col-start-5 2xl:col-start-6">
+              <button type="button" className="bb-btn-secondary w-full lg:w-auto" disabled={!records.length} onClick={() => printProjectStatement(project, records)}>
+                <Printer size={17} />
+                Print statement
+              </button>
+            </div>
           </FilterPanel>
           <ProjectLedgerTable records={records} />
           <ProjectLedgerCards records={records} />
@@ -1043,8 +1287,8 @@ export default function Home() {
             record.category,
             relatedRecordName(record),
             record.addedBy,
-            record.narration,
-            record.quantity,
+            itemNamesSummary(record),
+            quantitySummary(record),
             record.price,
             record.depositSource,
             record.partnerId ? partnerName(record.partnerId) : "",
@@ -1071,13 +1315,13 @@ export default function Home() {
         <section className="min-w-0 rounded-lg border border-slate-200 bg-white shadow-sm">
           <TableHeader
             title={`${type} records date wise`}
-            subtitle="Project, location, category, added by/time, narration, evidence, and delete action."
+            subtitle="Project, location, category, added by/time, item narration, evidence, and delete action."
             action={
               <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
                 <SearchBox
                   value={ledgerSearch[key]}
                   onChange={(value) => setLedgerSearch((prev) => ({ ...prev, [key]: value }))}
-                  placeholder="Search project, category, narration"
+                  placeholder="Search project, category, item"
                 />
                 <button type="button" className="bb-btn-primary" onClick={() => openRecordModal({ recordType: type })}>
                   <Plus size={17} />
@@ -1246,7 +1490,7 @@ export default function Home() {
                   <Download size={17} />
                   CSV
                 </button>
-                <button type="button" className="bb-btn-secondary" disabled={!reportFilters} onClick={() => window.print()}>
+                <button type="button" className="bb-btn-secondary" disabled={!reportFilters} onClick={() => printReportStatement(report, filters)}>
                   <Printer size={17} />
                   Print / PDF
                 </button>
@@ -1639,9 +1883,26 @@ export default function Home() {
     const presetType = currentUser.role === "Partner" ? "জমা" : modal.recordType || "খরচ";
     const partnerUser = currentUser.role === "Partner";
     const [localCategory, setLocalCategory] = useState(partnerUser ? "Partners" : "মালামাল");
+    const [itemRows, setItemRows] = useState([{ id: "item-1", name: "", quantity: "" }]);
     const selectedRecordCategory = partnerUser ? "Partners" : localCategory;
     const smartCategory = smartRecordCategories[selectedRecordCategory];
     const showSmartPicker = isAdmin && Boolean(smartCategory);
+    const updateItemRow = (id, field, value) => {
+      setItemRows((currentRows) => {
+        const nextRows = currentRows.map((row) => (row.id === id ? { ...row, [field]: value } : row));
+        const lastRow = nextRows.at(-1);
+        if ((lastRow?.name.trim() || lastRow?.quantity.trim()) && !nextRows.some((row) => !row.name.trim() && !row.quantity.trim())) {
+          return [...nextRows, { id: `item-${Date.now()}-${nextRows.length}`, name: "", quantity: "" }];
+        }
+        return nextRows;
+      });
+    };
+    const removeItemRow = (id) => {
+      setItemRows((currentRows) => {
+        const nextRows = currentRows.filter((row) => row.id !== id);
+        return nextRows.length ? nextRows : [{ id: "item-1", name: "", quantity: "" }];
+      });
+    };
 
     return (
       <Modal title="Add জমা / খরচ record" onClose={() => setModal(null)} wide>
@@ -1708,15 +1969,41 @@ export default function Home() {
                 <input name="partnerName" list="partner-options" defaultValue={partnerUser ? partnerName(currentUser.partnerId) : ""} className="bb-input" placeholder="Optional unless source is Partner" />
               </Field>
             )}
-            <Field label="Quantity optional">
-              <input name="quantity" className="bb-input" placeholder="100 bag, 1 day, blank if not countable" />
-            </Field>
           </div>
+          <Field label="Items and quantity" hint="Type an item name and the next blank row will appear automatically.">
+            <div className="grid gap-2">
+              {itemRows.map((row, index) => (
+                <div key={row.id} className="grid grid-cols-[minmax(0,1fr)_112px_40px] gap-2 sm:grid-cols-[minmax(0,1fr)_180px_40px]">
+                  <input
+                    name="itemName"
+                    value={row.name}
+                    onChange={(event) => updateItemRow(row.id, "name", event.target.value)}
+                    list="record-item-options"
+                    className="bb-input"
+                    placeholder={index === 0 ? "Cement, sand, soil, labour..." : "Another item"}
+                  />
+                  <input
+                    name="itemQuantity"
+                    value={row.quantity}
+                    onChange={(event) => updateItemRow(row.id, "quantity", event.target.value)}
+                    className="bb-input"
+                    placeholder="Qty optional"
+                  />
+                  <button
+                    type="button"
+                    className="bb-icon-btn h-10 w-10 disabled:pointer-events-none disabled:opacity-30"
+                    onClick={() => removeItemRow(row.id)}
+                    disabled={itemRows.length === 1}
+                    aria-label="Remove item"
+                  >
+                    <X size={17} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </Field>
           <Field label="Price">
             <input name="price" type="number" min="0" step="1" required className="bb-input" placeholder="Amount in BDT" />
-          </Field>
-          <Field label="Narration">
-            <textarea name="narration" required className="bb-input min-h-24 resize-y" placeholder="Write what happened in this entry" />
           </Field>
           <Field label="PDF/Image evidence" hint="Frontend demo stores the file name only.">
             <label className="flex min-h-24 cursor-pointer items-center justify-center gap-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 text-sm font-bold text-slate-500 hover:border-teal-300 hover:bg-teal-50">
@@ -1876,6 +2163,11 @@ export default function Home() {
         <datalist id="project-options">
           {visibleProjects().map((item) => (
             <option key={item.id} value={item.title} />
+          ))}
+        </datalist>
+        <datalist id="record-item-options">
+          {recordItemSuggestions.map((item) => (
+            <option key={item} value={item} />
           ))}
         </datalist>
       </>
@@ -2042,18 +2334,12 @@ export default function Home() {
           </tr>
         ))}
         <tr className="bg-slate-50 font-black">
-          <td colSpan={7} className="px-3 py-3 text-slate-700">
+          <td colSpan={6} className="px-3 py-3 text-slate-700">
             Daily total
           </td>
-          <td className="px-3 py-3">
-            <div className="flex flex-wrap justify-end gap-4">
-              <span className="text-emerald-700">জমা {money(totals.income)}</span>
-              <span className="text-rose-700">খরচ {money(totals.expense)}</span>
-              <span className={totals.balance >= 0 ? "text-emerald-700" : "text-rose-700"}>Balance {money(totals.balance)}</span>
-            </div>
+          <td colSpan={4} className="px-3 py-3">
+            <DailyTotalMath totals={totals} />
           </td>
-          <td />
-          <td />
         </tr>
       </>
     );
@@ -2123,15 +2409,14 @@ export default function Home() {
     const groups = groupByDate(records);
     return (
       <div className="bb-scrollbar hidden overflow-x-auto p-4 pt-0 xl:block">
-        <table className="bb-ledger-table min-w-[1040px] w-full text-left text-sm">
+        <table className="bb-ledger-table min-w-[980px] w-full text-left text-sm">
           <thead className="bg-slate-50 text-xs font-black uppercase text-slate-500">
             <tr>
               <th className="px-3 py-3">Date</th>
               <th className="px-3 py-3">Type</th>
               <th className="px-3 py-3">Location</th>
               <th className="px-3 py-3">Category</th>
-              <th className="px-3 py-3">Added by</th>
-              <th className="px-3 py-3">Time</th>
+              <th className="px-3 py-3">Added by / Time</th>
               <th className="px-3 py-3">Narration</th>
               <th className="px-3 py-3">Quantity</th>
               <th className="px-3 py-3 text-right">Price</th>
@@ -2177,60 +2462,77 @@ export default function Home() {
           ];
 
           return locationGroups.flatMap((locationGroup, locationIndex) =>
-            locationGroup.records.map((record, recordIndex) => {
-              const showDate = rowIndex === 0;
-              const showType = locationIndex === 0 && recordIndex === 0;
-              const showLocation = recordIndex === 0;
-              rowIndex += 1;
+            locationGroup.records.flatMap((record, recordIndex) => {
+              const items = recordItems(record);
+              return items.map((item, itemIndex) => {
+                const showDate = rowIndex === 0;
+                const showType = locationIndex === 0 && recordIndex === 0 && itemIndex === 0;
+                const showLocation = recordIndex === 0 && itemIndex === 0;
+                const showRecordCells = itemIndex === 0;
+                rowIndex += 1;
 
-              return (
-                <tr key={record.id} className="align-top">
-                  {showDate && (
-                    <td rowSpan={records.length + 1} className="w-32 bg-slate-50 px-3 py-3 text-center font-black text-slate-800">
-                      {formatDate(date)}
-                      <span className="mt-1 block text-xs font-semibold text-slate-500">{weekday(date)}</span>
+                return (
+                  <tr key={`${record.id}-${itemIndex}`} className="align-top">
+                    {showDate && (
+                      <td rowSpan={rowSpanForRecords(records) + 1} className="w-32 bg-slate-50 px-3 py-3 text-center font-black text-slate-800">
+                        {formatDate(date)}
+                        <span className="mt-1 block text-xs font-semibold text-slate-500">{weekday(date)}</span>
+                      </td>
+                    )}
+                    {showType && (
+                      <td rowSpan={rowSpanForRecords(typeGroup.records)} className="w-24 bg-white px-3 py-3 text-center align-middle">
+                        <TypeBadge type={typeGroup.type} />
+                      </td>
+                    )}
+                    {showLocation && (
+                      <td rowSpan={rowSpanForRecords(locationGroup.records)} className="w-24 bg-white px-3 py-3 text-center align-middle">
+                        <Badge tone={locationGroup.location === "Office" ? "green" : "blue"}>{locationGroup.location}</Badge>
+                      </td>
+                    )}
+                    {showRecordCells && (
+                      <td rowSpan={items.length} className="px-3 py-3">
+                        <p className="font-semibold text-slate-700">{record.category}</p>
+                        {relatedRecordName(record) && <p className="mt-1 text-xs font-semibold text-slate-500">{relatedRecordName(record)}</p>}
+                      </td>
+                    )}
+                    {showRecordCells && (
+                      <td rowSpan={items.length} className="px-3 py-3 text-slate-600">
+                        <p>{record.addedBy}</p>
+                        <span className="mt-1 block text-xs font-semibold text-slate-500">{formatTime(record.time)}</span>
+                      </td>
+                    )}
+                    <td className="min-w-64 px-3 py-3 text-slate-700">
+                      <span className="mr-1 font-black text-slate-400">
+                        {orderMap.get(record.id)}
+                        {items.length > 1 ? `.${itemIndex + 1}` : ""}.
+                      </span>
+                      {item.name}
                     </td>
-                  )}
-                  {showType && (
-                    <td rowSpan={typeGroup.records.length} className="w-24 bg-white px-3 py-3 text-center align-middle">
-                      <TypeBadge type={typeGroup.type} />
-                    </td>
-                  )}
-                  {showLocation && (
-                    <td rowSpan={locationGroup.records.length} className="w-24 bg-white px-3 py-3 text-center align-middle">
-                      <Badge tone={locationGroup.location === "Office" ? "green" : "blue"}>{locationGroup.location}</Badge>
-                    </td>
-                  )}
-                  <td className="px-3 py-3">
-                    <p className="font-semibold text-slate-700">{record.category}</p>
-                    {relatedRecordName(record) && <p className="mt-1 text-xs font-semibold text-slate-500">{relatedRecordName(record)}</p>}
-                  </td>
-                  <td className="px-3 py-3 text-slate-600">{record.addedBy}</td>
-                  <td className="px-3 py-3 text-slate-600">{formatTime(record.time)}</td>
-                  <td className="min-w-64 px-3 py-3 text-slate-700">
-                    <span className="mr-1 font-black text-slate-400">{orderMap.get(record.id)}.</span>
-                    {record.narration}
-                  </td>
-                  <td className="px-3 py-3 text-slate-600">{record.quantity || "-"}</td>
-                  <td className={classNames("px-3 py-3 text-right font-black", record.type === "জমা" ? "text-emerald-700" : "text-rose-700")}>{money(record.price)}</td>
-                  <td className="px-3 py-3 text-center">
-                    <button type="button" className="bb-icon-btn mx-auto" onClick={() => setModal({ type: "evidence", recordId: record.id })} aria-label="View evidence">
-                      <FileText size={17} />
-                    </button>
-                  </td>
-                </tr>
-              );
+                    <td className="px-3 py-3 text-slate-600">{item.quantity || "-"}</td>
+                    {showRecordCells && (
+                      <td rowSpan={items.length} className={classNames("px-3 py-3 text-right font-black align-middle", record.type === "জমা" ? "text-emerald-700" : "text-rose-700")}>
+                        {money(record.price)}
+                      </td>
+                    )}
+                    {showRecordCells && (
+                      <td rowSpan={items.length} className="px-3 py-3 text-center align-middle">
+                        <button type="button" className="bb-icon-btn mx-auto" onClick={() => setModal({ type: "evidence", recordId: record.id })} aria-label="View evidence">
+                          <FileText size={17} />
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                );
+              });
             })
           );
         })}
         <tr className="bg-slate-50 font-black">
-          <td colSpan={9} className="px-3 py-3 text-slate-700">
+          <td colSpan={4} className="px-3 py-3 text-slate-700">
             Daily total
-            <div className="mt-2 flex flex-wrap justify-end gap-4">
-              <span className="text-emerald-700">জমা {money(totals.income)}</span>
-              <span className="text-rose-700">খরচ {money(totals.expense)}</span>
-              <span className={totals.balance >= 0 ? "text-emerald-700" : "text-rose-700"}>Balance {money(totals.balance)}</span>
-            </div>
+          </td>
+          <td colSpan={4} className="px-3 py-3">
+            <DailyTotalMath totals={totals} />
           </td>
         </tr>
       </>
@@ -2286,11 +2588,7 @@ export default function Home() {
             Daily total
           </td>
           <td colSpan={4} className="px-3 py-3">
-            <div className="flex flex-wrap justify-end gap-4">
-              <span className="text-emerald-700">জমা {money(totals.income)}</span>
-              <span className="text-rose-700">খরচ {money(totals.expense)}</span>
-              <span className={totals.balance >= 0 ? "text-emerald-700" : "text-rose-700"}>Balance {money(totals.balance)}</span>
-            </div>
+            <DailyTotalMath totals={totals} />
           </td>
         </tr>
       </>
@@ -2357,51 +2655,77 @@ export default function Home() {
     const dayTotal = records.reduce((sum, record) => sum + Number(record.price || 0), 0);
     return (
       <>
-        {records.map((record, index) => {
+        {records.flatMap((record, index) => {
           const project = getProject(record.projectId);
-          return (
-            <tr key={record.id} className="align-top">
-              {index === 0 && (
-                <td rowSpan={records.length + 1} className="w-36 bg-slate-50 px-3 py-3 font-black text-slate-800">
-                  {formatDate(date)}
-                  <span className="mt-1 block text-xs font-semibold text-slate-500">{weekday(date)}</span>
-                </td>
-              )}
-              <td className="px-3 py-3 text-center font-black text-slate-500">{index + 1}</td>
-              <td className="px-3 py-3">
-                <p className="font-black text-slate-900">{project?.title || "Unknown"}</p>
-                <p className="mt-1 text-xs font-semibold text-slate-500">{project?.location}</p>
-              </td>
-              <td className="px-3 py-3">
-                <Badge tone={record.location === "Office" ? "green" : "blue"}>{record.location}</Badge>
-              </td>
-              <td className="px-3 py-3">
-                <p className="font-semibold text-slate-700">{record.category}</p>
-                {relatedRecordName(record) && <p className="mt-1 text-xs font-semibold text-slate-500">{relatedRecordName(record)}</p>}
-              </td>
-              <td className="px-3 py-3 text-slate-600">
-                {record.addedBy}
-                <span className="mt-1 block text-xs font-semibold text-slate-500">{formatTime(record.time)}</span>
-              </td>
-              <td className="min-w-64 px-3 py-3 text-slate-700">{record.narration}</td>
-              <td className="px-3 py-3 text-slate-600">{record.quantity || "-"}</td>
-              <td className={classNames("px-3 py-3 text-right font-black", record.type === "জমা" ? "text-emerald-700" : "text-rose-700")}>{money(record.price)}</td>
-              <td className="px-3 py-3 text-center">
-                <button type="button" className="bb-icon-btn mx-auto" onClick={() => setModal({ type: "evidence", recordId: record.id })}>
-                  <FileText size={17} />
-                </button>
-              </td>
-              <td className="px-3 py-3 text-center">
-                {canDeleteRecord(record) ? (
-                  <button type="button" className="bb-icon-btn mx-auto hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700" onClick={() => deleteRecord(record.id)}>
-                    <Trash2 size={17} />
-                  </button>
-                ) : (
-                  <LockKeyhole className="mx-auto text-slate-300" size={17} />
+          const items = recordItems(record);
+          return items.map((item, itemIndex) => {
+            const showRecordCells = itemIndex === 0;
+            return (
+              <tr key={`${record.id}-${itemIndex}`} className="align-top">
+                {index === 0 && itemIndex === 0 && (
+                  <td rowSpan={rowSpanForRecords(records) + 1} className="w-36 bg-slate-50 px-3 py-3 font-black text-slate-800">
+                    {formatDate(date)}
+                    <span className="mt-1 block text-xs font-semibold text-slate-500">{weekday(date)}</span>
+                  </td>
                 )}
-              </td>
-            </tr>
-          );
+                {showRecordCells && <td rowSpan={items.length} className="px-3 py-3 text-center font-black text-slate-500">{index + 1}</td>}
+                {showRecordCells && (
+                  <td rowSpan={items.length} className="px-3 py-3">
+                    <p className="font-black text-slate-900">{project?.title || "Unknown"}</p>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">{project?.location}</p>
+                  </td>
+                )}
+                {showRecordCells && (
+                  <td rowSpan={items.length} className="px-3 py-3 align-middle">
+                    <Badge tone={record.location === "Office" ? "green" : "blue"}>{record.location}</Badge>
+                  </td>
+                )}
+                {showRecordCells && (
+                  <td rowSpan={items.length} className="px-3 py-3">
+                    <p className="font-semibold text-slate-700">{record.category}</p>
+                    {relatedRecordName(record) && <p className="mt-1 text-xs font-semibold text-slate-500">{relatedRecordName(record)}</p>}
+                  </td>
+                )}
+                {showRecordCells && (
+                  <td rowSpan={items.length} className="px-3 py-3 text-slate-600">
+                    {record.addedBy}
+                    <span className="mt-1 block text-xs font-semibold text-slate-500">{formatTime(record.time)}</span>
+                  </td>
+                )}
+                <td className="min-w-64 px-3 py-3 text-slate-700">
+                  <span className="mr-1 font-black text-slate-400">
+                    {index + 1}
+                    {items.length > 1 ? `.${itemIndex + 1}` : ""}.
+                  </span>
+                  {item.name}
+                </td>
+                <td className="px-3 py-3 text-slate-600">{item.quantity || "-"}</td>
+                {showRecordCells && (
+                  <td rowSpan={items.length} className={classNames("px-3 py-3 text-right font-black align-middle", record.type === "জমা" ? "text-emerald-700" : "text-rose-700")}>
+                    {money(record.price)}
+                  </td>
+                )}
+                {showRecordCells && (
+                  <td rowSpan={items.length} className="px-3 py-3 text-center align-middle">
+                    <button type="button" className="bb-icon-btn mx-auto" onClick={() => setModal({ type: "evidence", recordId: record.id })}>
+                      <FileText size={17} />
+                    </button>
+                  </td>
+                )}
+                {showRecordCells && (
+                  <td rowSpan={items.length} className="px-3 py-3 text-center align-middle">
+                    {canDeleteRecord(record) ? (
+                      <button type="button" className="bb-icon-btn mx-auto hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700" onClick={() => deleteRecord(record.id)}>
+                        <Trash2 size={17} />
+                      </button>
+                    ) : (
+                      <LockKeyhole className="mx-auto text-slate-300" size={17} />
+                    )}
+                  </td>
+                )}
+              </tr>
+            );
+          });
         })}
         <tr className="bg-slate-50 font-black">
           <td colSpan={7} className="px-3 py-3 text-slate-700">
@@ -2449,7 +2773,7 @@ export default function Home() {
               <th className="py-3 pr-4">Type</th>
               <th className="py-3 pr-4">Location</th>
               <th className="py-3 pr-4">Category</th>
-              <th className="py-3 pr-4">Added by</th>
+              <th className="py-3 pr-4">Added by / Time</th>
               <th className="py-3 pr-4">Narration</th>
               <th className="py-3 pr-4 text-right">Price</th>
             </tr>
@@ -2467,7 +2791,6 @@ export default function Home() {
                   )}
                   <td className="py-4 pr-4">
                     <p className="font-bold text-slate-700">{formatDate(record.date)}</p>
-                    <p className="mt-1 text-xs font-semibold text-slate-500">{formatTime(record.time)}</p>
                   </td>
                   <td className="py-4 pr-4">
                     <TypeBadge type={record.type} />
@@ -2479,8 +2802,14 @@ export default function Home() {
                     <p className="text-slate-600">{record.category}</p>
                     {relatedRecordName(record) && <p className="mt-1 text-xs font-semibold text-slate-500">{relatedRecordName(record)}</p>}
                   </td>
-                  <td className="py-4 pr-4 text-slate-600">{record.addedBy}</td>
-                  <td className="py-4 pr-4 text-slate-700">{record.narration}</td>
+                  <td className="py-4 pr-4 text-slate-600">
+                    <p>{record.addedBy}</p>
+                    <span className="mt-1 block text-xs font-semibold text-slate-500">{formatTime(record.time)}</span>
+                  </td>
+                  <td className="py-4 pr-4 text-slate-700">
+                    <p>{itemNamesSummary(record)}</p>
+                    {quantitySummary(record) && <p className="mt-1 text-xs font-semibold text-slate-500">{quantitySummary(record)}</p>}
+                  </td>
                   <td className={classNames("py-4 pr-4 text-right font-black", record.type === "জমা" ? "text-emerald-700" : "text-rose-700")}>{money(record.price)}</td>
                 </tr>
               );
@@ -2523,8 +2852,8 @@ export default function Home() {
           <InfoRow label="Added by" value={record.addedBy} />
           <InfoRow label="Category" value={record.category} />
           {relatedRecordName(record) && <InfoRow label="Name" value={relatedRecordName(record)} />}
-          <InfoRow label="Quantity" value={record.quantity || "-"} />
-          <InfoRow label="Narration" value={!allowDelete && index ? `${index}. ${record.narration}` : record.narration} />
+          <InfoRow label="Narration" value={!allowDelete && index ? `${index}. ${itemNamesSummary(record)}` : itemNamesSummary(record)} />
+          <InfoRow label="Quantity" value={quantitySummary(record) || "-"} />
           <InfoRow label="Price" value={money(record.price)} valueClass={record.type === "জমা" ? "text-emerald-700" : "text-rose-700"} />
         </div>
         <div className="mt-4 flex gap-2">
@@ -2591,8 +2920,8 @@ function LoginScreen({ store, onLogin }) {
                 <div className="bg-white px-3 py-2">{record.type}</div>
                 <div className="bg-white px-3 py-2">{record.location}</div>
                 <div className="bg-white px-3 py-2">{record.category}</div>
-                <div className="truncate bg-white px-3 py-2">{record.narration}</div>
-                <div className="bg-white px-3 py-2">{record.quantity || "-"}</div>
+                <div className="truncate bg-white px-3 py-2">{itemNamesSummary(record)}</div>
+                <div className="truncate bg-white px-3 py-2">{quantitySummary(record) || "-"}</div>
                 <div className="bg-white px-3 py-2 font-black">{money(record.price)}</div>
               </div>
             ))}
@@ -2714,7 +3043,7 @@ function SearchBox({ value, onChange, placeholder }) {
 function FilterPanel({ children }) {
   return (
     <div className="border-y border-slate-100 bg-slate-50/80 px-4 py-3">
-      <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-6">
+      <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-2 lg:grid-cols-5 2xl:grid-cols-6">
         {children}
       </div>
     </div>
@@ -2841,6 +3170,25 @@ function FinanceStack({ totals }) {
   );
 }
 
+function DailyTotalMath({ totals }) {
+  return (
+    <div className="ml-auto grid w-full max-w-72 gap-1 text-sm font-black">
+      <div className="flex items-center justify-between gap-5 text-emerald-700">
+        <span>জমা</span>
+        <span>{money(totals.income)}</span>
+      </div>
+      <div className="flex items-center justify-between gap-5 border-b border-slate-300 pb-1 text-rose-700">
+        <span>- খরচ</span>
+        <span>{money(totals.expense)}</span>
+      </div>
+      <div className={classNames("flex items-center justify-between gap-5 pt-1", totals.balance >= 0 ? "text-emerald-700" : "text-rose-700")}>
+        <span>= Balance</span>
+        <span>{money(totals.balance)}</span>
+      </div>
+    </div>
+  );
+}
+
 function PillList({ items, empty }) {
   if (!items.length) return <span className="text-sm font-semibold text-slate-400">{empty}</span>;
   return (
@@ -2867,6 +3215,170 @@ function Definition({ label, value }) {
       <dt className="text-sm font-bold text-slate-500">{label}</dt>
       <dd className="text-right text-sm font-black text-slate-900">{value}</dd>
     </div>
+  );
+}
+
+function StatementPrintView({ statement }) {
+  if (!statement) return null;
+  return (
+    <section className="statement-print">
+      <div className="statement-page">
+        <header className="statement-header">
+          <div className="statement-brand-mark">BB</div>
+          <div>
+            <h1>Bellal Brothers</h1>
+            <p>Civil Architecture, Construction & Project Accounts</p>
+            <strong>{statement.title}</strong>
+          </div>
+        </header>
+
+        <div className="statement-meta-grid">
+          <div>
+            <p>
+              <span>Statement For</span>
+              <strong>{statement.scopeLabel}</strong>
+            </p>
+            <p>
+              <span>Period</span>
+              <strong>{statement.period}</strong>
+            </p>
+            {statement.project && (
+              <>
+                <p>
+                  <span>Project Location</span>
+                  <strong>{statement.project.location}</strong>
+                </p>
+                <p>
+                  <span>Department</span>
+                  <strong>{statement.project.department}</strong>
+                </p>
+              </>
+            )}
+          </div>
+          <div>
+            <p>
+              <span>Statement No</span>
+              <strong>{statement.statementNo}</strong>
+            </p>
+            <p>
+              <span>Generated Date</span>
+              <strong>{statement.generatedAt}</strong>
+            </p>
+            <p>
+              <span>Generated By</span>
+              <strong>{statement.generatedBy}</strong>
+            </p>
+            <p>
+              <span>Currency</span>
+              <strong>BDT</strong>
+            </p>
+          </div>
+        </div>
+
+        {!!statement.filters.length && (
+          <div className="statement-filter-row">
+            <span>Applied Filters</span>
+            {statement.filters.map((filter) => (
+              <strong key={`${filter.label}-${filter.value}`}>
+                {filter.label}: {filter.value}
+              </strong>
+            ))}
+          </div>
+        )}
+
+        <div className="statement-summary-grid">
+          <div>
+            <span>Opening Balance</span>
+            <strong>{money(statement.openingBalance)}</strong>
+          </div>
+          <div>
+            <span>Total Debit / খরচ</span>
+            <strong>{money(statement.totalDebit)}</strong>
+          </div>
+          <div>
+            <span>Total Credit / জমা</span>
+            <strong>{money(statement.totalCredit)}</strong>
+          </div>
+          <div>
+            <span>Closing Balance</span>
+            <strong>{money(statement.closingBalance)}</strong>
+          </div>
+        </div>
+
+        <table className="statement-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Ref</th>
+              {statement.includeProjectColumn && <th>Project / Site</th>}
+              <th>Particulars</th>
+              <th>Category</th>
+              <th>Qty</th>
+              <th>Debit</th>
+              <th>Credit</th>
+              <th>Balance</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="statement-opening-row">
+              <td colSpan={statement.includeProjectColumn ? 8 : 7}>Opening Balance</td>
+              <td>{money(statement.openingBalance)}</td>
+            </tr>
+            {statement.rows.map((row) => (
+              <tr key={row.id}>
+                <td>
+                  {formatDate(row.date)}
+                  <small>{formatTime(row.time)}</small>
+                </td>
+                <td>#{row.serial}</td>
+                {statement.includeProjectColumn && (
+                  <td>
+                    <strong>{row.project}</strong>
+                    <small>{row.location}</small>
+                  </td>
+                )}
+                <td>
+                  <strong>{row.serial}. {row.narration}</strong>
+                  <small>
+                    Added by {row.addedBy}
+                    {row.relatedName ? ` · ${row.relatedName}` : ""}
+                    {row.evidence && row.evidence !== "No file" ? ` · File: ${row.evidence}` : ""}
+                  </small>
+                </td>
+                <td>{row.category}</td>
+                <td>{row.quantity}</td>
+                <td className="statement-money debit">{row.debit ? money(row.debit) : "-"}</td>
+                <td className="statement-money credit">{row.credit ? money(row.credit) : "-"}</td>
+                <td className="statement-money">{money(row.balance)}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colSpan={statement.includeProjectColumn ? 6 : 5}>Total</td>
+              <td>{money(statement.totalDebit)}</td>
+              <td>{money(statement.totalCredit)}</td>
+              <td>{money(statement.closingBalance)}</td>
+            </tr>
+          </tfoot>
+        </table>
+
+        <footer className="statement-footer">
+          <div>
+            <span>Prepared By</span>
+            <strong>{statement.generatedBy}</strong>
+          </div>
+          <div>
+            <span>Checked By</span>
+            <strong>________________</strong>
+          </div>
+          <div>
+            <span>Authorized Signature</span>
+            <strong>________________</strong>
+          </div>
+        </footer>
+      </div>
+    </section>
   );
 }
 
