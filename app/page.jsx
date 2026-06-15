@@ -36,7 +36,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { accessLevels, categories, DEMO_TODAY, makeRecord, seedData, STORAGE_KEY } from "@/lib/demo-data";
+import { accessLevels, categories, DEMO_TODAY, makePersonalTransaction, makeRecord, personalTransactionCategories, seedData, STORAGE_KEY } from "@/lib/demo-data";
 import {
   classNames,
   formatDate,
@@ -57,6 +57,7 @@ const navByRole = {
     ["projects", "Projects", FolderKanban],
     ["income", "জমা", ArrowUpRight],
     ["expenses", "খরচ", ArrowDownRight],
+    ["personal-transactions", "অন্যান্য লেনদেন", ReceiptText],
     ["reports", "Reports", BarChart3],
     ["staff", "Staff", UserCog],
     ["partners", "Partner", HandCoins],
@@ -95,6 +96,7 @@ const pageText = {
   projects: ["Projects", "Project status, access, staff, partner, subcontractor, and balance."],
   income: ["জমা", "All visible deposits grouped by date and entry time."],
   expenses: ["খরচ", "All visible expenses grouped by date and entry time."],
+  "personal-transactions": ["অন্যান্য লেনদেন", "Admin-only non-project money entries kept separate from project balances."],
   reports: ["Reports", "Generate project statements, category reports, and partner জমা reports."],
   staff: ["Staff", "Managers and engineers with active project coverage."],
   partners: ["Partner", "Partner investment, returned amount, and due balance."],
@@ -113,6 +115,40 @@ const badgeTone = {
   ink: "border-slate-300 bg-white text-slate-800",
 };
 
+const smartRecordCategories = {
+  Staff: { type: "staff", field: "staff", label: "Staff name" },
+  Partners: { type: "partner", field: "partner", label: "Partner name" },
+  Subcontractor: { type: "subcontractor", field: "subcontractor", label: "Subcontractor name" },
+};
+
+const personalPartySuggestions = {
+  Cleaner: ["Room cleaner", "Office cleaner", "Site cleaner"],
+  Office: ["Admin Office", "Owner/Admin", "Office assistant"],
+  Utility: ["Electricity bill", "Water bill", "Gas bill", "Internet bill"],
+  Transport: ["Rickshaw/CNG", "Fuel", "Driver", "Local transport"],
+  Food: ["Office lunch", "Tea/snacks", "Staff meal"],
+  "Personal Cost": ["Admin Office", "Owner/Admin", "Personal expense"],
+  Others: ["Admin Office", "Miscellaneous"],
+};
+
+function normalizeStore(rawStore) {
+  const nextStore = { ...rawStore };
+  nextStore.personalTransactions = nextStore.personalTransactions || [];
+  nextStore.records = (nextStore.records || []).map((record) => {
+    const partner =
+      !record.relatedName && record.depositSource === "Partner" && record.partnerId
+        ? nextStore.partners?.find((item) => item.id === record.partnerId)
+        : null;
+    return {
+      ...record,
+      relatedType: record.relatedType || (partner ? "partner" : ""),
+      relatedId: record.relatedId || partner?.id || null,
+      relatedName: record.relatedName || partner?.name || "",
+    };
+  });
+  return nextStore;
+}
+
 export default function Home() {
   const [store, setStore] = useState(() => seedData());
   const [userId, setUserId] = useState(null);
@@ -123,7 +159,18 @@ export default function Home() {
   const [toast, setToast] = useState("");
   const [projectSearch, setProjectSearch] = useState("");
   const [projectFilters, setProjectFilters] = useState({ type: "সব", location: "সব", search: "" });
+  const [projectListFilters, setProjectListFilters] = useState({ status: "সব", department: "সব", staff: "সব", partner: "সব" });
+  const [ledgerFilters, setLedgerFilters] = useState({
+    income: { project: "সব", location: "সব", category: "সব", addedBy: "সব", from: "", to: "" },
+    expenses: { project: "সব", location: "সব", category: "সব", addedBy: "সব", from: "", to: "" },
+  });
   const [ledgerSearch, setLedgerSearch] = useState({ income: "", expenses: "" });
+  const [personalSearch, setPersonalSearch] = useState("");
+  const [personalFilters, setPersonalFilters] = useState({ type: "সব", category: "সব", party: "সব", from: "", to: "" });
+  const [staffFilters, setStaffFilters] = useState({ search: "", designation: "সব", assigned: "সব" });
+  const [partnerFilters, setPartnerFilters] = useState({ search: "", project: "সব", due: "সব" });
+  const [subcontractorFilters, setSubcontractorFilters] = useState({ search: "", specialty: "সব", project: "সব", active: "সব" });
+  const [accessFilters, setAccessFilters] = useState({ user: "সব", role: "সব", project: "সব", level: "সব" });
   const [reportFilters, setReportFilters] = useState(null);
 
   useEffect(() => {
@@ -131,7 +178,9 @@ export default function Home() {
     if (!raw) return;
     try {
       const parsed = JSON.parse(raw);
-      if (parsed?.version === 2) window.queueMicrotask(() => setStore(parsed));
+      if ([2, 3].includes(parsed?.version)) {
+        window.queueMicrotask(() => setStore(normalizeStore(parsed)));
+      }
     } catch {
       window.localStorage.removeItem(STORAGE_KEY);
     }
@@ -179,6 +228,33 @@ export default function Home() {
 
   function subcontractorName(id) {
     return store.subcontractors.find((sub) => sub.id === id)?.name || "No subcontractor";
+  }
+
+  function relatedRecordName(record) {
+    if (record.relatedName) return record.relatedName;
+    if (record.depositSource === "Partner" && record.partnerId) return partnerName(record.partnerId);
+    return "";
+  }
+
+  function relatedOptionsFor(category) {
+    if (category === "Staff") return store.staff;
+    if (category === "Partners") return store.partners;
+    if (category === "Subcontractor") return store.subcontractors;
+    return [];
+  }
+
+  function matchRelatedEntity(category, rawName) {
+    const query = String(rawName || "").trim().toLowerCase();
+    if (!query) return null;
+    return relatedOptionsFor(category).find((item) => item.name.toLowerCase() === query || item.name.toLowerCase().includes(query)) || null;
+  }
+
+  function uniqueOptions(values) {
+    return [...new Set(values.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+  }
+
+  function dateInRange(date, from, to) {
+    return (!from || date >= from) && (!to || date <= to);
   }
 
   function getProject(id) {
@@ -268,6 +344,10 @@ export default function Home() {
     setSidebarOpen(false);
   }
 
+  function openRecordModal(nextModal = {}) {
+    setModal({ type: "record", ...nextModal });
+  }
+
   useEffect(() => {
     if (!currentUser) return;
     if (!pageAllowed(page)) {
@@ -337,16 +417,31 @@ export default function Home() {
     if (!canEditProject(project.id)) return setToast("You do not have add-record access for this project.");
 
     const type = currentUser.role === "Partner" ? "জমা" : String(data.get("type") || "খরচ");
+    const category = String(data.get("category") || "Others");
     const depositSource = type === "জমা" ? String(data.get("depositSource") || "Owner/Admin") : "";
-    const partnerInput = String(data.get("partnerName") || "").trim().toLowerCase();
+    const smartCategory = smartRecordCategories[category];
+    const relatedInput = String(data.get("relatedName") || data.get("partnerName") || "").trim();
+    const relatedEntity = smartCategory ? matchRelatedEntity(category, relatedInput) : null;
+
+    if (isAdmin && smartCategory && !relatedEntity) {
+      return setToast(`Select a valid ${smartCategory.label}.`);
+    }
+
+    const partnerInput = String(data.get("partnerName") || relatedInput || "").trim().toLowerCase();
+    const matchedPartner =
+      category === "Partners" && relatedEntity
+        ? relatedEntity
+        : store.partners.find((partner) => partner.name.toLowerCase() === partnerInput || partner.name.toLowerCase().includes(partnerInput));
     const partnerId =
       depositSource === "Partner"
         ? currentUser.role === "Partner"
           ? currentUser.partnerId
-          : store.partners.find((partner) => partner.name.toLowerCase() === partnerInput || partner.name.toLowerCase().includes(partnerInput))?.id ||
-            project.partnerIds[0] ||
-            null
+          : matchedPartner?.id || project.partnerIds[0] || null
         : null;
+    const partnerRelated = depositSource === "Partner" && partnerId ? store.partners.find((partner) => partner.id === partnerId) : null;
+    const relatedType = currentUser.role === "Partner" ? "partner" : relatedEntity ? smartCategory.type : partnerRelated ? "partner" : "";
+    const relatedId = currentUser.role === "Partner" ? currentUser.partnerId : relatedEntity?.id || partnerRelated?.id || null;
+    const relatedName = currentUser.role === "Partner" ? partnerName(currentUser.partnerId) : relatedEntity?.name || partnerRelated?.name || "";
     const date = String(data.get("date") || DEMO_TODAY);
     const time = String(data.get("time") || "10:00");
     const price = Number(data.get("price") || 0);
@@ -370,7 +465,10 @@ export default function Home() {
         price,
         depositSource,
         partnerId,
-        file?.name || ""
+        file?.name || "",
+        relatedType,
+        relatedId,
+        relatedName
       )
     );
     const nextProject = nextStore.projects.find((item) => item.id === project.id);
@@ -393,6 +491,56 @@ export default function Home() {
       .pop();
     if (nextProject && latest) nextProject.lastEdited = latest;
     commit(nextStore, "Record deleted.");
+  }
+
+  function addPersonalTransaction(event) {
+    event.preventDefault();
+    if (!isAdmin) return setToast("Only Admin can add other transactions.");
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const type = String(data.get("type") || "খরচ");
+    const date = String(data.get("date") || DEMO_TODAY);
+    const time = String(data.get("time") || "10:00");
+    const price = Number(data.get("price") || 0);
+    const party = String(data.get("party") || "").trim();
+    const narration = String(data.get("narration") || "").trim();
+    if (!party || !narration || price <= 0) return setToast("Party, narration, and a valid price are required.");
+    if (String(data.get("category") || "") === "Staff" && !matchRelatedEntity("Staff", party)) {
+      return setToast("Select a valid staff name.");
+    }
+
+    const file = form.elements.evidence?.files?.[0];
+    const nextStore = structuredClone(store);
+    nextStore.personalTransactions = nextStore.personalTransactions || [];
+    nextStore.personalTransactions.push(
+      makePersonalTransaction(
+        `ot${Date.now()}`,
+        date,
+        time,
+        type,
+        String(data.get("category") || "Others"),
+        party,
+        currentUser.name,
+        narration,
+        String(data.get("quantity") || "").trim(),
+        price,
+        file?.name || ""
+      )
+    );
+    setPersonalSearch("");
+    setPage("personal-transactions");
+    setModal(null);
+    commit(nextStore, "Other transaction saved.");
+  }
+
+  function deletePersonalTransaction(id) {
+    if (!isAdmin) return setToast("Only Admin can delete other transactions.");
+    const record = store.personalTransactions?.find((item) => item.id === id);
+    if (!record) return setToast("Transaction not found.");
+    if (!window.confirm("Delete this other transaction?")) return;
+    const nextStore = structuredClone(store);
+    nextStore.personalTransactions = (nextStore.personalTransactions || []).filter((item) => item.id !== id);
+    commit(nextStore, "Other transaction deleted.");
   }
 
   function updateAccess(nextUserId, nextProjectId, level) {
@@ -472,7 +620,7 @@ export default function Home() {
   function downloadReport() {
     const report = buildReport();
     if (!report) return;
-    const headers = ["Date", "Time", "Project", "Type", "Location", "Category", "Added By", "Narration", "Quantity", "Price", "Deposit Source", "Partner"];
+    const headers = ["Date", "Time", "Project", "Type", "Location", "Category", "Related Name", "Added By", "Narration", "Quantity", "Price", "Deposit Source", "Partner"];
     const rows = report.records.map((record) => {
       const project = getProject(record.projectId);
       return [
@@ -482,6 +630,7 @@ export default function Home() {
         record.type,
         record.location,
         record.category,
+        relatedRecordName(record),
         record.addedBy,
         record.narration,
         record.quantity,
@@ -565,8 +714,8 @@ export default function Home() {
       </aside>
 
       <main className="min-h-screen min-w-0 lg:ml-[292px] lg:w-[calc(100vw-292px)]">
-        <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/85 backdrop-blur no-print">
-          <div className="flex min-h-20 items-center justify-between gap-4 px-4 py-3 sm:px-6 lg:px-8">
+        <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur no-print lg:hidden">
+          <div className="flex min-h-14 items-center gap-3 px-4 py-2 sm:px-6">
             <div className="flex min-w-0 items-center gap-3">
               <button
                 type="button"
@@ -577,19 +726,13 @@ export default function Home() {
                 <Menu size={20} />
               </button>
               <div className="min-w-0">
-                <h1 className="truncate text-xl font-black text-slate-950 sm:text-2xl">{title}</h1>
-                <p className="mt-1 line-clamp-2 text-sm font-medium text-slate-500">{subtitle}</p>
+                <h1 className="truncate text-base font-black text-slate-950">{title}</h1>
+                <p className="line-clamp-1 text-xs font-medium text-slate-500">{subtitle}</p>
               </div>
-            </div>
-            <div className="hidden items-center gap-2 md:flex">
-              <button type="button" onClick={() => setModal({ type: "record" })} className="bb-btn-primary">
-                <Plus size={17} />
-                Add record
-              </button>
             </div>
           </div>
         </header>
-        <div className="mx-auto min-w-0 max-w-[1560px] px-4 py-5 sm:px-6 lg:px-8 lg:py-7">{renderPage()}</div>
+        <div className="mx-auto min-w-0 max-w-[1560px] px-4 py-4 sm:px-6 lg:px-8 lg:py-5">{renderPage()}</div>
       </main>
 
       {modal && renderModal()}
@@ -607,6 +750,7 @@ export default function Home() {
     if (page === "project-detail") return <ProjectDetailPage />;
     if (page === "income") return <LedgerPage type="জমা" />;
     if (page === "expenses") return <LedgerPage type="খরচ" />;
+    if (page === "personal-transactions") return <PersonalTransactionsPage />;
     if (page === "reports") return <ReportsPage />;
     if (page === "staff") return <StaffPage />;
     if (page === "partners") return <PartnersPage />;
@@ -685,7 +829,7 @@ export default function Home() {
               {isAdmin && (
                 <ActionButton icon={FolderKanban} title="Add project" text="Create a new project with optional staff and partner." onClick={() => setModal({ type: "project" })} />
               )}
-              <ActionButton icon={ReceiptText} title="Add record" text="Add জমা or খরচ with file-name evidence." onClick={() => setModal({ type: "record" })} />
+              <ActionButton icon={ReceiptText} title="Add record" text="Add জমা or খরচ with file-name evidence." onClick={() => openRecordModal()} />
               <ActionButton icon={BarChart3} title="Generate report" text="Build filtered statements and partner জমা report." onClick={() => goTo("reports")} />
               {isAdmin && <ActionButton icon={ShieldCheck} title="Access matrix" text="Control project permissions by user." onClick={() => goTo("access")} />}
             </div>
@@ -706,10 +850,14 @@ export default function Home() {
   }
 
   function ProjectsPage() {
+    const visibleProjectList = visibleProjects();
+    const statusOptions = uniqueOptions(visibleProjectList.map((project) => project.status));
+    const departmentOptions = uniqueOptions(visibleProjectList.map((project) => project.department));
+    const staffOptions = uniqueOptions(visibleProjectList.flatMap((project) => project.staffIds.map(staffName)));
+    const partnerOptions = uniqueOptions(visibleProjectList.flatMap((project) => project.partnerIds.map(partnerName)));
     const projects = visibleProjects().filter((project) => {
       const query = projectSearch.trim().toLowerCase();
-      if (!query) return true;
-      return [
+      const text = [
         project.title,
         project.location,
         project.department,
@@ -720,6 +868,13 @@ export default function Home() {
         .join(" ")
         .toLowerCase()
         .includes(query);
+      return (
+        (!query || text) &&
+        (projectListFilters.status === "সব" || project.status === projectListFilters.status) &&
+        (projectListFilters.department === "সব" || project.department === projectListFilters.department) &&
+        (projectListFilters.staff === "সব" || project.staffIds.map(staffName).includes(projectListFilters.staff)) &&
+        (projectListFilters.partner === "সব" || project.partnerIds.map(partnerName).includes(projectListFilters.partner))
+      );
     });
     const totals = totalsFor(projects.flatMap((project) => projectRecords(project.id)));
     const active = projects.filter((project) => project.status === "Active").length;
@@ -749,6 +904,12 @@ export default function Home() {
               </div>
             }
           />
+          <FilterPanel>
+            <FilterSelect label="Status" value={projectListFilters.status} options={["সব", ...statusOptions]} onChange={(value) => setProjectListFilters((prev) => ({ ...prev, status: value }))} />
+            <FilterSelect label="Department" value={projectListFilters.department} options={["সব", ...departmentOptions]} onChange={(value) => setProjectListFilters((prev) => ({ ...prev, department: value }))} />
+            <FilterSelect label="Staff" value={projectListFilters.staff} options={["সব", ...staffOptions]} onChange={(value) => setProjectListFilters((prev) => ({ ...prev, staff: value }))} />
+            <FilterSelect label="Partner" value={projectListFilters.partner} options={["সব", ...partnerOptions]} onChange={(value) => setProjectListFilters((prev) => ({ ...prev, partner: value }))} />
+          </FilterPanel>
           <ProjectTable projects={projects} />
           <ProjectCards projects={projects} />
         </section>
@@ -760,27 +921,33 @@ export default function Home() {
     const project = getProject(projectId);
     if (!project) return <EmptyState title="Project not found" />;
     const totals = projectTotals(project.id);
+    const projectAllRecords = sortedRecords(projectRecords(project.id));
+    const projectCategoryOptions = uniqueOptions(projectAllRecords.map((record) => record.category));
+    const projectAddedByOptions = uniqueOptions(projectAllRecords.map((record) => record.addedBy));
     const records = sortedRecords(projectRecords(project.id)).filter((record) => {
       const query = projectFilters.search.trim().toLowerCase();
-      const text = [record.category, record.addedBy, record.narration, record.quantity, record.price].join(" ").toLowerCase();
+      const text = [record.category, relatedRecordName(record), record.addedBy, record.narration, record.quantity, record.price].join(" ").toLowerCase();
       return (
         (projectFilters.type === "সব" || record.type === projectFilters.type) &&
         (projectFilters.location === "সব" || record.location === projectFilters.location) &&
+        (!projectFilters.category || projectFilters.category === "সব" || record.category === projectFilters.category) &&
+        (!projectFilters.addedBy || projectFilters.addedBy === "সব" || record.addedBy === projectFilters.addedBy) &&
+        dateInRange(record.date, projectFilters.from, projectFilters.to) &&
         (!query || text.includes(query))
       );
     });
 
     return (
       <div className="grid min-w-0 gap-5">
-        <section className="min-w-0 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-          <button type="button" onClick={() => goTo("projects")} className="mb-4 inline-flex items-center gap-2 text-sm font-black text-slate-600 hover:text-slate-950">
+        <section className="min-w-0 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+          <button type="button" onClick={() => goTo("projects")} className="mb-2 inline-flex items-center gap-2 text-xs font-black text-slate-600 hover:text-slate-950">
             <ArrowLeft size={16} />
             Back to projects
           </button>
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
+          <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
             <div>
-              <h2 className="text-2xl font-black text-slate-950 sm:text-3xl">{project.title}</h2>
-              <div className="mt-3 flex flex-wrap gap-2">
+              <h2 className="text-xl font-black text-slate-950 sm:text-2xl">{project.title}</h2>
+              <div className="mt-2 flex flex-wrap gap-2">
                 <Badge tone="ink" icon={CalendarDays}>
                   Created {formatDate(project.createdAt)}
                 </Badge>
@@ -794,12 +961,12 @@ export default function Home() {
                   {project.status}
                 </Badge>
               </div>
-              <p className="mt-3 text-sm font-medium text-slate-500">
+              <p className="mt-2 text-sm font-medium text-slate-500">
                 Staff: {project.staffIds.map(staffName).join(", ") || "Optional"} · Partner: {project.partnerIds.map(partnerName).join(", ") || "No partner"}
               </p>
             </div>
             {canEditProject(project.id) && (
-              <button type="button" className="bb-btn-primary" onClick={() => setModal({ type: "record", projectId: project.id })}>
+              <button type="button" className="bb-btn-primary" onClick={() => openRecordModal({ projectId: project.id })}>
                 <Plus size={17} />
                 Add record
               </button>
@@ -838,6 +1005,12 @@ export default function Home() {
               </div>
             }
           />
+          <FilterPanel>
+            <FilterSelect label="Category" value={projectFilters.category || "সব"} options={["সব", ...projectCategoryOptions]} onChange={(value) => setProjectFilters((prev) => ({ ...prev, category: value }))} />
+            <FilterSelect label="Added by" value={projectFilters.addedBy || "সব"} options={["সব", ...projectAddedByOptions]} onChange={(value) => setProjectFilters((prev) => ({ ...prev, addedBy: value }))} />
+            <FilterDate label="From" value={projectFilters.from || ""} onChange={(value) => setProjectFilters((prev) => ({ ...prev, from: value }))} />
+            <FilterDate label="To" value={projectFilters.to || ""} onChange={(value) => setProjectFilters((prev) => ({ ...prev, to: value }))} />
+          </FilterPanel>
           <ProjectLedgerTable records={records} />
           <ProjectLedgerCards records={records} />
         </section>
@@ -848,16 +1021,27 @@ export default function Home() {
   function LedgerPage({ type }) {
     const key = type === "জমা" ? "income" : "expenses";
     const query = ledgerSearch[key].trim().toLowerCase();
+    const filters = ledgerFilters[key];
+    const baseRecords = allVisibleRecords().filter((record) => record.type === type);
+    const ledgerProjectOptions = uniqueOptions(baseRecords.map((record) => getProject(record.projectId)?.title));
+    const ledgerLocationOptions = uniqueOptions(baseRecords.map((record) => record.location));
+    const ledgerCategoryOptions = uniqueOptions(baseRecords.map((record) => record.category));
+    const ledgerAddedByOptions = uniqueOptions(baseRecords.map((record) => record.addedBy));
+    const updateLedgerFilter = (field, value) => setLedgerFilters((prev) => ({ ...prev, [key]: { ...prev[key], [field]: value } }));
     const records = sortedRecords(
-      allVisibleRecords()
-        .filter((record) => record.type === type)
-        .filter((record) => {
+      baseRecords.filter((record) => {
           const project = getProject(record.projectId);
+          if (filters.project !== "সব" && project?.title !== filters.project) return false;
+          if (filters.location !== "সব" && record.location !== filters.location) return false;
+          if (filters.category !== "সব" && record.category !== filters.category) return false;
+          if (filters.addedBy !== "সব" && record.addedBy !== filters.addedBy) return false;
+          if (!dateInRange(record.date, filters.from, filters.to)) return false;
           return [
             project?.title,
             project?.location,
             record.location,
             record.category,
+            relatedRecordName(record),
             record.addedBy,
             record.narration,
             record.quantity,
@@ -895,15 +1079,82 @@ export default function Home() {
                   onChange={(value) => setLedgerSearch((prev) => ({ ...prev, [key]: value }))}
                   placeholder="Search project, category, narration"
                 />
-                <button type="button" className="bb-btn-primary" onClick={() => setModal({ type: "record", recordType: type })}>
+                <button type="button" className="bb-btn-primary" onClick={() => openRecordModal({ recordType: type })}>
                   <Plus size={17} />
                   Add {type}
                 </button>
               </div>
             }
           />
+          <FilterPanel>
+            <FilterSelect label="Project" value={filters.project} options={["সব", ...ledgerProjectOptions]} onChange={(value) => updateLedgerFilter("project", value)} />
+            <FilterSelect label="Location" value={filters.location} options={["সব", ...ledgerLocationOptions]} onChange={(value) => updateLedgerFilter("location", value)} />
+            <FilterSelect label="Category" value={filters.category} options={["সব", ...ledgerCategoryOptions]} onChange={(value) => updateLedgerFilter("category", value)} />
+            <FilterSelect label="Added by" value={filters.addedBy} options={["সব", ...ledgerAddedByOptions]} onChange={(value) => updateLedgerFilter("addedBy", value)} />
+            <FilterDate label="From" value={filters.from} onChange={(value) => updateLedgerFilter("from", value)} />
+            <FilterDate label="To" value={filters.to} onChange={(value) => updateLedgerFilter("to", value)} />
+          </FilterPanel>
           <GroupedLedgerTable records={records} />
           <GroupedLedgerCards records={records} />
+        </section>
+      </div>
+    );
+  }
+
+  function PersonalTransactionsPage() {
+    if (!isAdmin) return <EmptyState title="Only Admin can use other transactions" />;
+    const query = personalSearch.trim().toLowerCase();
+    const personalBaseRecords = store.personalTransactions || [];
+    const personalCategoryOptions = uniqueOptions(personalBaseRecords.map((record) => record.category));
+    const personalPartyOptions = uniqueOptions(personalBaseRecords.map((record) => record.party));
+    const records = sortedRecords(
+      personalBaseRecords.filter((record) =>
+        (personalFilters.type === "সব" || record.type === personalFilters.type) &&
+        (personalFilters.category === "সব" || record.category === personalFilters.category) &&
+        (personalFilters.party === "সব" || record.party === personalFilters.party) &&
+        dateInRange(record.date, personalFilters.from, personalFilters.to) &&
+        [record.type, record.category, record.party, record.addedBy, record.narration, record.quantity, record.price]
+          .join(" ")
+          .toLowerCase()
+          .includes(query)
+      )
+    );
+    const totals = totalsFor(records);
+    const todaysRecords = records.filter((record) => record.date === DEMO_TODAY);
+    const todaysTotals = totalsFor(todaysRecords);
+
+    return (
+      <div className="grid min-w-0 gap-5">
+        <div className="grid min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <MetricCard label="মোট জমা" value={money(totals.income)} helper="Non-project deposits" icon={ArrowUpRight} tone="green" />
+          <MetricCard label="মোট খরচ" value={money(totals.expense)} helper="Non-project expenses" icon={ArrowDownRight} tone="red" />
+          <MetricCard label="Balance" value={money(totals.balance)} helper="জমা - খরচ" icon={BadgeDollarSign} tone="amber" />
+          <MetricCard label="Today balance" value={money(todaysTotals.balance)} helper={`${todaysRecords.length} entries on ${formatDate(DEMO_TODAY)}`} icon={CalendarDays} tone="blue" />
+        </div>
+
+        <section className="min-w-0 rounded-lg border border-slate-200 bg-white shadow-sm">
+          <TableHeader
+            title="অন্যান্য লেনদেন"
+            subtitle="Admin-only money entries that do not belong to any project."
+            action={
+              <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+                <SearchBox value={personalSearch} onChange={setPersonalSearch} placeholder="Search party, category, narration" />
+                <button type="button" className="bb-btn-primary" onClick={() => setModal({ type: "personalTransaction" })}>
+                  <Plus size={17} />
+                  Add transaction
+                </button>
+              </div>
+            }
+          />
+          <FilterPanel>
+            <FilterSelect label="Type" value={personalFilters.type} options={["সব", "জমা", "খরচ"]} onChange={(value) => setPersonalFilters((prev) => ({ ...prev, type: value }))} />
+            <FilterSelect label="Category" value={personalFilters.category} options={["সব", ...personalCategoryOptions]} onChange={(value) => setPersonalFilters((prev) => ({ ...prev, category: value }))} />
+            <FilterSelect label="Party" value={personalFilters.party} options={["সব", ...personalPartyOptions]} onChange={(value) => setPersonalFilters((prev) => ({ ...prev, party: value }))} />
+            <FilterDate label="From" value={personalFilters.from} onChange={(value) => setPersonalFilters((prev) => ({ ...prev, from: value }))} />
+            <FilterDate label="To" value={personalFilters.to} onChange={(value) => setPersonalFilters((prev) => ({ ...prev, to: value }))} />
+          </FilterPanel>
+          <PersonalTransactionTable records={records} />
+          <PersonalTransactionCards records={records} />
         </section>
       </div>
     );
@@ -1023,7 +1274,7 @@ export default function Home() {
 
   function StaffPage() {
     const idSet = new Set(visibleIds);
-    const rows = store.staff.map((staff) => {
+    const baseRows = store.staff.map((staff) => {
       const assigned = store.projects.filter((project) => project.staffIds.includes(staff.id));
       const visibleAssigned = isAdmin ? assigned : assigned.filter((project) => idSet.has(project.id));
       return {
@@ -1032,9 +1283,24 @@ export default function Home() {
         active: visibleAssigned.filter((project) => project.status === "Active"),
       };
     });
+    const designationOptions = uniqueOptions(baseRows.map(({ staff }) => staff.designation));
+    const rows = baseRows.filter(({ staff, assigned, active }) => {
+      const query = staffFilters.search.trim().toLowerCase();
+      const text = [staff.name, staff.designation, staff.phone, assigned.map((project) => project.title).join(" ")].join(" ").toLowerCase();
+      return (
+        (!query || text.includes(query)) &&
+        (staffFilters.designation === "সব" || staff.designation === staffFilters.designation) &&
+        (staffFilters.assigned === "সব" || (staffFilters.assigned === "Assigned" ? assigned.length > 0 : active.length > 0))
+      );
+    });
     return (
       <section className="min-w-0 rounded-lg border border-slate-200 bg-white shadow-sm">
         <TableHeader title="Staff list" subtitle="Designation, assigned count, and active project names." />
+        <FilterPanel>
+          <SearchBox value={staffFilters.search} onChange={(value) => setStaffFilters((prev) => ({ ...prev, search: value }))} placeholder="Search staff, phone, project" />
+          <FilterSelect label="Designation" value={staffFilters.designation} options={["সব", ...designationOptions]} onChange={(value) => setStaffFilters((prev) => ({ ...prev, designation: value }))} />
+          <FilterSelect label="Project status" value={staffFilters.assigned} options={["সব", "Assigned", "Active"]} onChange={(value) => setStaffFilters((prev) => ({ ...prev, assigned: value }))} />
+        </FilterPanel>
         <div className="bb-scrollbar overflow-x-auto p-4 pt-0">
           <table className="min-w-[850px] w-full text-left text-sm">
             <thead className="text-xs font-black uppercase text-slate-500">
@@ -1068,10 +1334,31 @@ export default function Home() {
   }
 
   function PartnersPage() {
-    const partners = isAdmin ? store.partners : store.partners.filter((partner) => partner.id === currentUser.partnerId);
+    const basePartners = isAdmin ? store.partners : store.partners.filter((partner) => partner.id === currentUser.partnerId);
+    const partnerProjectOptions = uniqueOptions(
+      basePartners.flatMap((partner) => store.projects.filter((project) => project.partnerIds.includes(partner.id)).map((project) => project.title))
+    );
+    const partners = basePartners.filter((partner) => {
+      const projects = store.projects.filter((project) => project.partnerIds.includes(partner.id));
+      const deposit = partnerDepositTotal(partner.id);
+      const returned = partnerReturnedTotal(partner.id);
+      const due = deposit - returned;
+      const query = partnerFilters.search.trim().toLowerCase();
+      const text = [partner.name, partner.phone, projects.map((project) => project.title).join(" "), deposit, returned, due].join(" ").toLowerCase();
+      return (
+        (!query || text.includes(query)) &&
+        (partnerFilters.project === "সব" || projects.some((project) => project.title === partnerFilters.project)) &&
+        (partnerFilters.due === "সব" || (partnerFilters.due === "Due" ? due > 0 : due <= 0))
+      );
+    });
     return (
       <section className="min-w-0 rounded-lg border border-slate-200 bg-white shadow-sm">
         <TableHeader title="Partner investment" subtitle="Co-worked projects, deposited money, returned amount, and due balance." />
+        <FilterPanel>
+          <SearchBox value={partnerFilters.search} onChange={(value) => setPartnerFilters((prev) => ({ ...prev, search: value }))} placeholder="Search partner, project, phone" />
+          <FilterSelect label="Project" value={partnerFilters.project} options={["সব", ...partnerProjectOptions]} onChange={(value) => setPartnerFilters((prev) => ({ ...prev, project: value }))} />
+          <FilterSelect label="Due" value={partnerFilters.due} options={["সব", "Due", "Settled"]} onChange={(value) => setPartnerFilters((prev) => ({ ...prev, due: value }))} />
+        </FilterPanel>
         <div className="bb-scrollbar overflow-x-auto p-4 pt-0">
           <table className="min-w-[900px] w-full text-left text-sm">
             <thead className="text-xs font-black uppercase text-slate-500">
@@ -1130,7 +1417,7 @@ export default function Home() {
 
   function SubcontractorsPage() {
     const idSet = new Set(visibleIds);
-    const rows = store.subcontractors.map((sub) => {
+    const baseRows = store.subcontractors.map((sub) => {
       const projects = store.projects
         .filter((project) => project.subcontractorIds.includes(sub.id))
         .filter((project) => isAdmin || idSet.has(project.id));
@@ -1141,10 +1428,28 @@ export default function Home() {
         .reduce((sum, record) => sum + Number(record.price || 0), 0);
       return { sub, projects, active, cost };
     });
+    const specialtyOptions = uniqueOptions(baseRows.map(({ sub }) => sub.specialty));
+    const subcontractorProjectOptions = uniqueOptions(baseRows.flatMap(({ projects }) => projects.map((project) => project.title)));
+    const rows = baseRows.filter(({ sub, projects, active, cost }) => {
+      const query = subcontractorFilters.search.trim().toLowerCase();
+      const text = [sub.name, sub.specialty, projects.map((project) => project.title).join(" "), active.length, cost].join(" ").toLowerCase();
+      return (
+        (!query || text.includes(query)) &&
+        (subcontractorFilters.specialty === "সব" || sub.specialty === subcontractorFilters.specialty) &&
+        (subcontractorFilters.project === "সব" || projects.some((project) => project.title === subcontractorFilters.project)) &&
+        (subcontractorFilters.active === "সব" || (subcontractorFilters.active === "Active" ? active.length > 0 : active.length === 0))
+      );
+    });
 
     return (
       <section className="min-w-0 rounded-lg border border-slate-200 bg-white shadow-sm">
         <TableHeader title="Subcontractor list" subtitle="Assigned projects, active count, specialty, and recorded cost." />
+        <FilterPanel>
+          <SearchBox value={subcontractorFilters.search} onChange={(value) => setSubcontractorFilters((prev) => ({ ...prev, search: value }))} placeholder="Search subcontractor, specialty, project" />
+          <FilterSelect label="Specialty" value={subcontractorFilters.specialty} options={["সব", ...specialtyOptions]} onChange={(value) => setSubcontractorFilters((prev) => ({ ...prev, specialty: value }))} />
+          <FilterSelect label="Project" value={subcontractorFilters.project} options={["সব", ...subcontractorProjectOptions]} onChange={(value) => setSubcontractorFilters((prev) => ({ ...prev, project: value }))} />
+          <FilterSelect label="Active" value={subcontractorFilters.active} options={["সব", "Active", "No active"]} onChange={(value) => setSubcontractorFilters((prev) => ({ ...prev, active: value }))} />
+        </FilterPanel>
         <div className="bb-scrollbar overflow-x-auto p-4 pt-0">
           <table className="min-w-[850px] w-full text-left text-sm">
             <thead className="text-xs font-black uppercase text-slate-500">
@@ -1203,7 +1508,7 @@ export default function Home() {
         <section className="min-w-0 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
           <SectionHead title="Demo controls" subtitle="The project has no backend; these actions are stored in browser localStorage." />
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <ActionButton icon={ReceiptText} title="Add record" text="Create a role-based record entry." onClick={() => setModal({ type: "record" })} />
+            <ActionButton icon={ReceiptText} title="Add record" text="Create a role-based record entry." onClick={() => openRecordModal()} />
             <ActionButton icon={BarChart3} title="Open reports" text="Generate a filtered project statement." onClick={() => goTo("reports")} />
             {isAdmin && <ActionButton icon={ShieldCheck} title="Access control" text="Adjust project-level permission." onClick={() => goTo("access")} />}
             <ActionButton icon={RefreshCcw} title="Reset demo" text="Restore original dummy data." onClick={resetDemo} />
@@ -1216,6 +1521,19 @@ export default function Home() {
   function AccessPage() {
     if (!isAdmin) return <EmptyState title="Only Admin can use access control" />;
     const staffUsers = store.users.filter((user) => ["Manager", "Engineer"].includes(user.role));
+    const filteredAccessRows = staffUsers.flatMap((user) =>
+      store.projects
+        .filter((project) => {
+          const level = user.access?.[project.id] || "none";
+          return (
+            (accessFilters.user === "সব" || user.name === accessFilters.user) &&
+            (accessFilters.role === "সব" || user.role === accessFilters.role) &&
+            (accessFilters.project === "সব" || project.title === accessFilters.project) &&
+            (accessFilters.level === "সব" || level === accessFilters.level)
+          );
+        })
+        .map((project) => ({ user, project }))
+    );
     return (
       <div className="grid min-w-0 gap-5">
         <section className="min-w-0 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
@@ -1230,9 +1548,14 @@ export default function Home() {
         </section>
         <section className="min-w-0 rounded-lg border border-slate-200 bg-white shadow-sm">
           <TableHeader title="Project access matrix" subtitle="Change any selector and the role preview updates immediately." />
+          <FilterPanel>
+            <FilterSelect label="User" value={accessFilters.user} options={["সব", ...staffUsers.map((user) => user.name)]} onChange={(value) => setAccessFilters((prev) => ({ ...prev, user: value }))} />
+            <FilterSelect label="Role" value={accessFilters.role} options={["সব", ...uniqueOptions(staffUsers.map((user) => user.role))]} onChange={(value) => setAccessFilters((prev) => ({ ...prev, role: value }))} />
+            <FilterSelect label="Project" value={accessFilters.project} options={["সব", ...store.projects.map((project) => project.title)]} onChange={(value) => setAccessFilters((prev) => ({ ...prev, project: value }))} />
+            <FilterSelect label="Access" value={accessFilters.level} options={["সব", ...accessLevels.map((level) => level.value)]} onChange={(value) => setAccessFilters((prev) => ({ ...prev, level: value }))} />
+          </FilterPanel>
           <div className="grid gap-3 p-4 pt-0">
-            {staffUsers.flatMap((user) =>
-              store.projects.map((project) => (
+            {filteredAccessRows.map(({ user, project }) => (
                 <div key={`${user.id}-${project.id}`} className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 lg:grid-cols-[220px_minmax(0,1fr)_190px] lg:items-center">
                   <div>
                     <p className="font-black text-slate-950">{user.name}</p>
@@ -1252,8 +1575,7 @@ export default function Home() {
                     ))}
                   </select>
                 </div>
-              ))
-            )}
+              ))}
           </div>
         </section>
       </div>
@@ -1263,7 +1585,9 @@ export default function Home() {
   function renderModal() {
     if (modal.type === "project") return <ProjectModal />;
     if (modal.type === "record") return <RecordModal />;
+    if (modal.type === "personalTransaction") return <PersonalTransactionModal />;
     if (modal.type === "evidence") return <EvidenceModal />;
+    if (modal.type === "personalEvidence") return <PersonalEvidenceModal />;
     return null;
   }
 
@@ -1314,6 +1638,10 @@ export default function Home() {
     const presetProject = modal.projectId ? getProject(modal.projectId) : null;
     const presetType = currentUser.role === "Partner" ? "জমা" : modal.recordType || "খরচ";
     const partnerUser = currentUser.role === "Partner";
+    const [localCategory, setLocalCategory] = useState(partnerUser ? "Partners" : "মালামাল");
+    const selectedRecordCategory = partnerUser ? "Partners" : localCategory;
+    const smartCategory = smartRecordCategories[selectedRecordCategory];
+    const showSmartPicker = isAdmin && Boolean(smartCategory);
 
     return (
       <Modal title="Add জমা / খরচ record" onClose={() => setModal(null)} wide>
@@ -1349,7 +1677,7 @@ export default function Home() {
               <input type="time" name="time" defaultValue={nowTime()} required className="bb-input" />
             </Field>
             <Field label="Category">
-              <select name="category" defaultValue={partnerUser ? "Partners" : "মালামাল"} className="bb-input">
+              <select name="category" value={selectedRecordCategory} onChange={(event) => setLocalCategory(event.target.value)} className="bb-input">
                 {categories.map((category) => (
                   <option key={category} value={category}>
                     {category}
@@ -1357,6 +1685,11 @@ export default function Home() {
                 ))}
               </select>
             </Field>
+            {showSmartPicker && (
+              <Field label={smartCategory.label} hint="Choose a valid name from the list.">
+                <input name="relatedName" list={`${smartCategory.field}-options`} required className="bb-input" placeholder={`Start typing ${smartCategory.label.toLowerCase()}`} />
+              </Field>
+            )}
             <Field label="জমা source">
               {partnerUser ? (
                 <>
@@ -1370,9 +1703,11 @@ export default function Home() {
                 </select>
               )}
             </Field>
-            <Field label="Partner name for partner জমা">
-              <input name="partnerName" list="partner-options" defaultValue={partnerUser ? partnerName(currentUser.partnerId) : ""} className="bb-input" placeholder="Optional unless source is Partner" />
-            </Field>
+            {!showSmartPicker && (
+              <Field label="Partner name for partner জমা">
+                <input name="partnerName" list="partner-options" defaultValue={partnerUser ? partnerName(currentUser.partnerId) : ""} className="bb-input" placeholder="Optional unless source is Partner" />
+              </Field>
+            )}
             <Field label="Quantity optional">
               <input name="quantity" className="bb-input" placeholder="100 bag, 1 day, blank if not countable" />
             </Field>
@@ -1392,6 +1727,71 @@ export default function Home() {
           </Field>
           {!editableProjects.length && <EmptyState title="No editable project" text="This role currently has no project with add-record access." compact />}
           <ModalActions onClose={() => setModal(null)} submitLabel="Save record" disabled={!editableProjects.length} />
+        </form>
+      </Modal>
+    );
+  }
+
+  function PersonalTransactionModal() {
+    const [localCategory, setLocalCategory] = useState("Cleaner");
+    const partyOptions = localCategory === "Staff" ? store.staff.map((staff) => staff.name) : personalPartySuggestions[localCategory] || [];
+    const partyListId = `personal-party-${localCategory.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-")}-options`;
+    const partyLabel = localCategory === "Staff" ? "Staff name" : "Party / person";
+    const partyPlaceholder = localCategory === "Staff" ? "Start typing staff name" : partyOptions[0] || "Party or person name";
+
+    return (
+      <Modal title="Add অন্যান্য লেনদেন" onClose={() => setModal(null)} wide>
+        <form onSubmit={addPersonalTransaction} className="grid gap-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Type">
+              <select name="type" defaultValue="খরচ" className="bb-input">
+                <option value="জমা">জমা</option>
+                <option value="খরচ">খরচ</option>
+              </select>
+            </Field>
+            <Field label="Category">
+              <select name="category" value={localCategory} onChange={(event) => setLocalCategory(event.target.value)} className="bb-input">
+                {personalTransactionCategories.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label={partyLabel} hint={localCategory === "Staff" ? "Choose a valid staff name from the list." : "Start typing or choose a suggestion."}>
+              <input name="party" list={partyOptions.length ? partyListId : undefined} required className="bb-input" placeholder={partyPlaceholder} />
+              {partyOptions.length > 0 && (
+                <datalist id={partyListId}>
+                  {partyOptions.map((item) => (
+                    <option key={item} value={item} />
+                  ))}
+                </datalist>
+              )}
+            </Field>
+            <Field label="Quantity optional">
+              <input name="quantity" className="bb-input" placeholder="1 month, 1 day, blank if not countable" />
+            </Field>
+            <Field label="Date">
+              <input type="date" name="date" defaultValue={todayISO()} required className="bb-input" />
+            </Field>
+            <Field label="Time">
+              <input type="time" name="time" defaultValue={nowTime()} required className="bb-input" />
+            </Field>
+          </div>
+          <Field label="Price">
+            <input name="price" type="number" min="0" step="1" required className="bb-input" placeholder="Amount in BDT" />
+          </Field>
+          <Field label="Narration">
+            <textarea name="narration" required className="bb-input min-h-24 resize-y" placeholder="Write what happened in this entry" />
+          </Field>
+          <Field label="PDF/Image evidence" hint="Frontend demo stores the file name only.">
+            <label className="flex min-h-24 cursor-pointer items-center justify-center gap-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 text-sm font-bold text-slate-500 hover:border-teal-300 hover:bg-teal-50">
+              <UploadCloud size={20} />
+              <span>Select PDF/image evidence</span>
+              <input name="evidence" type="file" accept="image/*,.pdf" className="sr-only" />
+            </label>
+          </Field>
+          <ModalActions onClose={() => setModal(null)} submitLabel="Save transaction" />
         </form>
       </Modal>
     );
@@ -1421,6 +1821,35 @@ export default function Home() {
           </div>
         ) : (
           <EmptyState title="Record not found" />
+        )}
+      </Modal>
+    );
+  }
+
+  function PersonalEvidenceModal() {
+    const record = store.personalTransactions?.find((item) => item.id === modal.recordId);
+    return (
+      <Modal title="Evidence" onClose={() => setModal(null)}>
+        {record ? (
+          <div className="grid gap-4">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+              <Definition label="Ledger" value="অন্যান্য লেনদেন" />
+              <Definition label="Record" value={`${record.type} · ${money(record.price)}`} />
+              <Definition label="Party" value={record.party} />
+              <Definition label="Date" value={`${formatDate(record.date)} ${formatTime(record.time)}`} />
+              <Definition label="File" value={record.evidence || "No file attached"} />
+            </div>
+            <EmptyState
+              title={record.evidence ? "Evidence preview placeholder" : "No evidence attached"}
+              text={record.evidence ? "In the backend version this will open the uploaded PDF or image." : "This demo record has no file name."}
+              compact
+            />
+            <button type="button" className="bb-btn-primary ml-auto" onClick={() => setModal(null)}>
+              Done
+            </button>
+          </div>
+        ) : (
+          <EmptyState title="Transaction not found" />
         )}
       </Modal>
     );
@@ -1544,6 +1973,151 @@ export default function Home() {
     );
   }
 
+  function PersonalTransactionTable({ records }) {
+    if (!records.length) return <EmptyState title="No other transactions found" compact />;
+    const groups = groupByDate(records);
+    return (
+      <div className="bb-scrollbar hidden overflow-x-auto p-4 pt-0 xl:block">
+        <table className="bb-ledger-table min-w-[1060px] w-full text-left text-sm">
+          <thead className="bg-slate-50 text-xs font-black uppercase text-slate-500">
+            <tr>
+              <th className="px-3 py-3">Date</th>
+              <th className="px-3 py-3 text-center">#</th>
+              <th className="px-3 py-3">Type</th>
+              <th className="px-3 py-3">Category</th>
+              <th className="px-3 py-3">Party / person</th>
+              <th className="px-3 py-3">Added by / Time</th>
+              <th className="px-3 py-3">Narration</th>
+              <th className="px-3 py-3">Quantity</th>
+              <th className="px-3 py-3 text-right">Price</th>
+              <th className="px-3 py-3 text-center">Evidence</th>
+              <th className="px-3 py-3 text-center">Delete</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(groups).map(([date, dateRecords]) => (
+              <PersonalTransactionDateRows key={date} date={date} records={dateRecords} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  function PersonalTransactionDateRows({ date, records }) {
+    const totals = totalsFor(records);
+    return (
+      <>
+        {records.map((record, index) => (
+          <tr key={record.id} className="align-top">
+            {index === 0 && (
+              <td rowSpan={records.length + 1} className="w-36 bg-slate-50 px-3 py-3 font-black text-slate-800">
+                {formatDate(date)}
+                <span className="mt-1 block text-xs font-semibold text-slate-500">{weekday(date)}</span>
+              </td>
+            )}
+            <td className="px-3 py-3 text-center font-black text-slate-500">{index + 1}</td>
+            <td className="px-3 py-3">
+              <TypeBadge type={record.type} />
+            </td>
+            <td className="px-3 py-3 font-semibold text-slate-700">{record.category}</td>
+            <td className="px-3 py-3 font-black text-slate-900">{record.party}</td>
+            <td className="px-3 py-3 text-slate-600">
+              {record.addedBy}
+              <span className="mt-1 block text-xs font-semibold text-slate-500">{formatTime(record.time)}</span>
+            </td>
+            <td className="min-w-64 px-3 py-3 text-slate-700">{record.narration}</td>
+            <td className="px-3 py-3 text-slate-600">{record.quantity || "-"}</td>
+            <td className={classNames("px-3 py-3 text-right font-black", record.type === "জমা" ? "text-emerald-700" : "text-rose-700")}>{money(record.price)}</td>
+            <td className="px-3 py-3 text-center">
+              <button type="button" className="bb-icon-btn mx-auto" onClick={() => setModal({ type: "personalEvidence", recordId: record.id })} aria-label="View evidence">
+                <FileText size={17} />
+              </button>
+            </td>
+            <td className="px-3 py-3 text-center">
+              <button type="button" className="bb-icon-btn mx-auto hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700" onClick={() => deletePersonalTransaction(record.id)} aria-label="Delete transaction">
+                <Trash2 size={17} />
+              </button>
+            </td>
+          </tr>
+        ))}
+        <tr className="bg-slate-50 font-black">
+          <td colSpan={7} className="px-3 py-3 text-slate-700">
+            Daily total
+          </td>
+          <td className="px-3 py-3">
+            <div className="flex flex-wrap justify-end gap-4">
+              <span className="text-emerald-700">জমা {money(totals.income)}</span>
+              <span className="text-rose-700">খরচ {money(totals.expense)}</span>
+              <span className={totals.balance >= 0 ? "text-emerald-700" : "text-rose-700"}>Balance {money(totals.balance)}</span>
+            </div>
+          </td>
+          <td />
+          <td />
+        </tr>
+      </>
+    );
+  }
+
+  function PersonalTransactionCards({ records }) {
+    if (!records.length) return null;
+    const groups = groupByDate(records);
+    return (
+      <div className="grid gap-4 p-4 pt-0 xl:hidden">
+        {Object.entries(groups).map(([date, dateRecords]) => {
+          const totals = totalsFor(dateRecords);
+          return (
+            <section key={date} className="grid gap-3">
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                <p className="font-black text-slate-800">
+                  {formatDate(date)} · {weekday(date)}
+                </p>
+                <p className={classNames("font-black", totals.balance >= 0 ? "text-emerald-700" : "text-rose-700")}>{money(totals.balance)}</p>
+              </div>
+              {dateRecords.map((record, index) => (
+                <PersonalTransactionCard key={record.id} record={record} index={index + 1} />
+              ))}
+            </section>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function PersonalTransactionCard({ record, index }) {
+    return (
+      <article className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="font-black text-slate-950">
+              {index ? `${index}. ` : ""}
+              {record.party}
+            </p>
+            <p className="mt-1 text-sm font-semibold text-slate-500">
+              {formatDate(record.date)} · {formatTime(record.time)}
+            </p>
+          </div>
+          <TypeBadge type={record.type} />
+        </div>
+        <div className="mt-3 grid gap-2 text-sm">
+          <InfoRow label="Category" value={record.category} />
+          <InfoRow label="Added by" value={record.addedBy} />
+          <InfoRow label="Quantity" value={record.quantity || "-"} />
+          <InfoRow label="Narration" value={record.narration} />
+          <InfoRow label="Price" value={money(record.price)} valueClass={record.type === "জমা" ? "text-emerald-700" : "text-rose-700"} />
+        </div>
+        <div className="mt-4 flex gap-2">
+          <button type="button" className="bb-icon-btn" onClick={() => setModal({ type: "personalEvidence", recordId: record.id })} aria-label="View evidence">
+            <FileText size={17} />
+          </button>
+          <button type="button" className="bb-icon-btn hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700" onClick={() => deletePersonalTransaction(record.id)} aria-label="Delete transaction">
+            <Trash2 size={17} />
+          </button>
+        </div>
+      </article>
+    );
+  }
+
   function ProjectLedgerTable({ records }) {
     if (!records.length) return <EmptyState title="No records match this filter" compact />;
     const groups = groupByDate(records);
@@ -1595,7 +2169,10 @@ export default function Home() {
             <td className="px-3 py-3">
               <Badge tone={record.location === "Office" ? "green" : "blue"}>{record.location}</Badge>
             </td>
-            <td className="px-3 py-3 font-semibold text-slate-700">{record.category}</td>
+            <td className="px-3 py-3">
+              <p className="font-semibold text-slate-700">{record.category}</p>
+              {relatedRecordName(record) && <p className="mt-1 text-xs font-semibold text-slate-500">{relatedRecordName(record)}</p>}
+            </td>
             <td className="px-3 py-3 text-slate-600">{record.addedBy}</td>
             <td className="px-3 py-3 text-slate-600">{formatTime(record.time)}</td>
             <td className="min-w-64 px-3 py-3 text-slate-700">{record.narration}</td>
@@ -1713,7 +2290,7 @@ export default function Home() {
               </td>
               <td className="px-3 py-3">
                 <p className="font-semibold text-slate-700">{record.category}</p>
-                {record.depositSource === "Partner" && <p className="mt-1 text-xs font-semibold text-slate-500">Partner: {partnerName(record.partnerId)}</p>}
+                {relatedRecordName(record) && <p className="mt-1 text-xs font-semibold text-slate-500">{relatedRecordName(record)}</p>}
               </td>
               <td className="px-3 py-3 text-slate-600">
                 {record.addedBy}
@@ -1811,7 +2388,10 @@ export default function Home() {
                   <td className="py-4 pr-4">
                     <Badge tone={record.location === "Office" ? "green" : "blue"}>{record.location}</Badge>
                   </td>
-                  <td className="py-4 pr-4 text-slate-600">{record.category}</td>
+                  <td className="py-4 pr-4">
+                    <p className="text-slate-600">{record.category}</p>
+                    {relatedRecordName(record) && <p className="mt-1 text-xs font-semibold text-slate-500">{relatedRecordName(record)}</p>}
+                  </td>
                   <td className="py-4 pr-4 text-slate-600">{record.addedBy}</td>
                   <td className="py-4 pr-4 text-slate-700">{record.narration}</td>
                   <td className={classNames("py-4 pr-4 text-right font-black", record.type === "জমা" ? "text-emerald-700" : "text-rose-700")}>{money(record.price)}</td>
@@ -1855,10 +2435,10 @@ export default function Home() {
           <InfoRow label="Location" value={record.location} />
           <InfoRow label="Added by" value={record.addedBy} />
           <InfoRow label="Category" value={record.category} />
+          {relatedRecordName(record) && <InfoRow label="Name" value={relatedRecordName(record)} />}
           <InfoRow label="Quantity" value={record.quantity || "-"} />
           <InfoRow label="Narration" value={record.narration} />
           <InfoRow label="Price" value={money(record.price)} valueClass={record.type === "জমা" ? "text-emerald-700" : "text-rose-700"} />
-          {record.depositSource === "Partner" && <InfoRow label="Partner" value={partnerName(record.partnerId)} />}
         </div>
         <div className="mt-4 flex gap-2">
           <button type="button" className="bb-icon-btn" onClick={() => setModal({ type: "evidence", recordId: record.id })} aria-label="View evidence">
@@ -2011,12 +2591,12 @@ function SectionHead({ title, subtitle, action }) {
 
 function TableHeader({ title, subtitle, action }) {
   return (
-    <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
-      <div>
+    <div className="flex flex-col gap-3 p-4 xl:flex-row xl:items-start xl:justify-between">
+      <div className="min-w-0">
         <h2 className="text-lg font-black text-slate-950">{title}</h2>
         {subtitle && <p className="mt-1 text-sm font-medium text-slate-500">{subtitle}</p>}
       </div>
-      {action}
+      {action && <div className="w-full xl:w-auto">{action}</div>}
     </div>
   );
 }
@@ -2040,6 +2620,40 @@ function SearchBox({ value, onChange, placeholder }) {
     <label className="relative block w-full sm:w-72">
       <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
       <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="bb-input pl-10" />
+    </label>
+  );
+}
+
+function FilterPanel({ children }) {
+  return (
+    <div className="border-y border-slate-100 bg-slate-50/80 px-4 py-3">
+      <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-6">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function FilterSelect({ label, value, options, onChange }) {
+  return (
+    <label className="grid min-w-0 gap-1.5">
+      <span className="text-xs font-black uppercase text-slate-500">{label}</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)} className="bb-input bg-white">
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function FilterDate({ label, value, onChange }) {
+  return (
+    <label className="grid min-w-0 gap-1.5">
+      <span className="text-xs font-black uppercase text-slate-500">{label}</span>
+      <input type="date" value={value} onChange={(event) => onChange(event.target.value)} className="bb-input bg-white" />
     </label>
   );
 }
